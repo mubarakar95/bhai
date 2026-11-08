@@ -1,0 +1,66 @@
+name: Deploy to Google Play Store
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      track:
+        description: 'Google Play track to release to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - internal
+          - beta
+          - alpha
+
+jobs:
+  deploy:
+    name: Build & Release to Play Store
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
+
+      - name: Create key.properties
+        run: |
+          cat <<EOF > android/key.properties
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=upload-keystore.jks
+          EOF
+
+      - name: Build Android App Bundle (.aab)
+        run: flutter build appbundle --release
+
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_JSON_KEY }}
+          packageName: com.bhai.room_rental
+          releaseFiles: build/app/outputs/bundle/release/app-release.aab
+          track: ${{ github.event.inputs.track || 'production' }}
+          status: completed

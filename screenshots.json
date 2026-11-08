@@ -1,0 +1,40 @@
+{
+  "raw_dir": "store_assets/simulator_raw",
+  "screens": [
+    {
+      "file": "01_dashboard.png",
+      "tag": "ALL-IN-ONE PG MANAGEMENT",
+      "title": "Real-Time Occupancy & Rent Tracking",
+      "subtitle": "Instant overview of bed availability, check-ins, and collections",
+      "accent": [13, 148, 136]
+    },
+    {
+      "file": "02_guests.png",
+      "tag": "TENANT DIRECTORY & KYC",
+      "title": "Aadhaar Verified Guest Records",
+      "subtitle": "Complete KYC, police circle tags, and blacklist protection",
+      "accent": [37, 99, 235]
+    },
+    {
+      "file": "03_rooms.png",
+      "tag": "PROPERTY & ROOM MATRIX",
+      "title": "Smart Bed & Room Allocation",
+      "subtitle": "Manage capacities, tariffs, and live vacancy status per room",
+      "accent": [124, 58, 237]
+    },
+    {
+      "file": "04_police_reports.png",
+      "tag": "POLICE VERIFICATION REPORTS",
+      "title": "One-Click Official Form 2 & Ledgers",
+      "subtitle": "Generate and print verified guest ledgers for local authorities",
+      "accent": [217, 119, 6]
+    },
+    {
+      "file": "05_payments.png",
+      "tag": "RENT & UPI ACCOUNTING",
+      "title": "Automated Rent & Payment Ledger",
+      "subtitle": "Record UPI deposits, advances, dues, and transaction histories",
+      "accent": [16, 185, 129]
+    }
+  ]
+}
