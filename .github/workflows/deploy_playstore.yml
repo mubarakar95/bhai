@@ -1,8 +1,7 @@
 name: Deploy to Google Play Store
 
 on:
-  push:
-    branches: [main]
+  # Trigger manually via GitHub Actions tab
   workflow_dispatch:
     inputs:
       track:
@@ -60,7 +59,7 @@ jobs:
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_JSON_KEY }}
-          packageName: com.bhai.room_rental
+          packageName: com.bhaiapp.bhaiapp
           releaseFiles: build/app/outputs/bundle/release/app-release.aab
           track: ${{ github.event.inputs.track || 'production' }}
           status: completed
