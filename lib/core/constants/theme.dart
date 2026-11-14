@@ -79,6 +79,11 @@ ThemeData getAppTheme() {
       labelStyle: GoogleFonts.nunito(color: AppColors.textSecondary),
       hintStyle: GoogleFonts.nunito(color: AppColors.textMuted),
     ),
+    textSelectionTheme: TextSelectionThemeData(
+      cursorColor: AppColors.primary,
+      selectionColor: AppColors.primary.withValues(alpha: 0.25),
+      selectionHandleColor: AppColors.primary,
+    ),
     textTheme: TextTheme(
       // Friendly, modern rounded sans (Nunito)
       displayLarge: GoogleFonts.nunito(fontSize: 32, fontWeight: FontWeight.w800, color: AppColors.textMain),

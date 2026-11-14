@@ -152,89 +152,229 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       text: isPlaceholder ? '' : PhoneHelper.cleanPhoneNumber(owner.mobileNo),
     );
 
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Edit Owner Profile'),
-        content: Form(
-          key: formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: nameCtrl,
-                  decoration: const InputDecoration(labelText: 'Full Name *'),
-                  validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: businessCtrl,
-                  decoration: const InputDecoration(labelText: 'Business / PG Name'),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: addressCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Business / Official Address',
-                    hintText: 'e.g. Plot 45, Sector 62, Noida, UP (appears on PDF reports)',
-                  ),
-                  maxLines: 2,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: mobileCtrl,
-                  decoration: InputDecoration(
-                    labelText: 'Mobile Number *',
-                    hintText: '9876543210',
-                    prefixText: '+91 ',
-                    helperText: isPlaceholder ? 'Please enter your actual 10-digit mobile' : null,
-                    helperStyle: const TextStyle(color: Color(0xFFD97706)),
-                  ),
-                  keyboardType: TextInputType.phone,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(10),
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom,
+            left: 20,
+            right: 20,
+            top: 12,
+          ),
+          child: SafeArea(
+            top: false,
+            child: Form(
+              key: formKey,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Edit Owner Profile',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textMain,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: nameCtrl,
+                      decoration: const InputDecoration(labelText: 'Full Name *'),
+                      validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: businessCtrl,
+                      decoration: const InputDecoration(labelText: 'Business / PG Name'),
+                    ),
+                    const SizedBox(height: 16),
+                    // Address label & cursor navigation toolbar
+                    Row(
+                      children: [
+                        const Text(
+                          'Business / Official Address',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                        const Spacer(),
+                        // Move cursor left
+                        IconButton(
+                          icon: const Icon(Icons.arrow_left_rounded, size: 26, color: AppColors.primary),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                          tooltip: 'Move cursor left',
+                          onPressed: () {
+                            final sel = addressCtrl.selection;
+                            if (sel.isValid && sel.baseOffset > 0) {
+                              final newPos = sel.baseOffset - 1;
+                              addressCtrl.selection = TextSelection.collapsed(offset: newPos);
+                            } else if (!sel.isValid && addressCtrl.text.isNotEmpty) {
+                              addressCtrl.selection = TextSelection.collapsed(offset: addressCtrl.text.length - 1);
+                            }
+                          },
+                        ),
+                        // Move cursor right
+                        IconButton(
+                          icon: const Icon(Icons.arrow_right_rounded, size: 26, color: AppColors.primary),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                          tooltip: 'Move cursor right',
+                          onPressed: () {
+                            final sel = addressCtrl.selection;
+                            if (sel.isValid && sel.baseOffset < addressCtrl.text.length) {
+                              final newPos = sel.baseOffset + 1;
+                              addressCtrl.selection = TextSelection.collapsed(offset: newPos);
+                            } else if (!sel.isValid && addressCtrl.text.isNotEmpty) {
+                              addressCtrl.selection = TextSelection.collapsed(offset: addressCtrl.text.length);
+                            }
+                          },
+                        ),
+                        if (addressCtrl.text.isNotEmpty)
+                          IconButton(
+                            icon: const Icon(Icons.clear_rounded, size: 18, color: AppColors.textSecondary),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                            tooltip: 'Clear address',
+                            onPressed: () {
+                              addressCtrl.clear();
+                              setSheetState(() {});
+                            },
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    TextFormField(
+                      controller: addressCtrl,
+                      minLines: 3,
+                      maxLines: 5,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      style: const TextStyle(fontSize: 15, height: 1.45),
+                      onChanged: (_) => setSheetState(() {}),
+                      decoration: InputDecoration(
+                        hintText: 'Building/House, Street, Locality\nDistrict, State & PIN Code',
+                        hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+                        alignLabelWithHint: true,
+                        contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(color: AppColors.glassBorder),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(color: AppColors.glassBorder),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+                        ),
+                        helperText: 'Appears in PDF police reports and receipts',
+                        helperStyle: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: mobileCtrl,
+                      decoration: InputDecoration(
+                        labelText: 'Mobile Number *',
+                        hintText: '9876543210',
+                        prefixText: '+91 ',
+                        helperText: isPlaceholder ? 'Please enter your actual 10-digit mobile' : null,
+                        helperStyle: const TextStyle(color: Color(0xFFD97706)),
+                      ),
+                      keyboardType: TextInputType.phone,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(10),
+                      ],
+                      validator: PhoneHelper.validateMobileNumber,
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                            child: const Text('CANCEL'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              if (!formKey.currentState!.validate()) return;
+                              Navigator.pop(ctx);
+                              setState(() => _isSaving = true);
+                              final cleanMobile = PhoneHelper.cleanPhoneNumber(mobileCtrl.text.trim());
+                              final error = await ref.read(authProvider.notifier).updateProfile(
+                                fullName: nameCtrl.text.trim(),
+                                businessName: businessCtrl.text.trim(),
+                                businessAddress: addressCtrl.text.trim().isEmpty ? null : addressCtrl.text.trim(),
+                                mobileNo: cleanMobile,
+                              );
+                              if (mounted && context.mounted) {
+                                setState(() => _isSaving = false);
+                                if (error != null) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('Failed to update: $error'), backgroundColor: AppColors.alertRed),
+                                  );
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Owner profile details updated!')),
+                                  );
+                                }
+                              }
+                            },
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                            child: const Text('SAVE'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
                   ],
-                  validator: PhoneHelper.validateMobileNumber,
                 ),
-              ],
+              ),
             ),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('CANCEL'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (!formKey.currentState!.validate()) return;
-              Navigator.pop(ctx);
-              setState(() => _isSaving = true);
-              final cleanMobile = PhoneHelper.cleanPhoneNumber(mobileCtrl.text.trim());
-              final error = await ref.read(authProvider.notifier).updateProfile(
-                fullName: nameCtrl.text.trim(),
-                businessName: businessCtrl.text.trim(),
-                businessAddress: addressCtrl.text.trim().isEmpty ? null : addressCtrl.text.trim(),
-                mobileNo: cleanMobile,
-              );
-              if (mounted && context.mounted) {
-                setState(() => _isSaving = false);
-                if (error != null) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed to update: $error'), backgroundColor: AppColors.alertRed),
-                  );
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Owner profile details updated!')),
-                  );
-                }
-              }
-            },
-            child: const Text('SAVE'),
-          ),
-        ],
       ),
     );
   }
