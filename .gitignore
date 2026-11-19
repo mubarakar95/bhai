@@ -60,5 +60,6 @@ key.properties
 *service-account*.json
 play_config.json
 tools/migration/data/
+tools/migration/*.csv
 YouPI-PG/
 .gemini/

@@ -23,9 +23,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 # --- CONFIGURATION ---
-SUPABASE_URL = "https://dsminsgahrnwzskmwsvn.supabase.co"
-SERVICE_ROLE_KEY = "REDACTED_KEY"
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://dsminsgahrnwzskmwsvn.supabase.co")
+SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 STORAGE_BUCKET = "person-photos"
+
+if not SERVICE_ROLE_KEY:
+    print("Error: SUPABASE_SERVICE_ROLE_KEY environment variable is required.")
+    print("Usage: SUPABASE_SERVICE_ROLE_KEY='<key>' python3 run_migration.py")
+    sys.exit(1)
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 USERS_CSV = os.path.join(DATA_DIR, "users.csv")
