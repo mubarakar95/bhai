@@ -13,14 +13,18 @@ final dbServiceProvider = Provider<SupabaseService>((ref) => SupabaseService.ins
 
 // --- Auth Provider ---
 class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
+  final SupabaseService _db;
   StreamSubscription<AuthState>? _authSubscription;
 
-  AuthNotifier() : super(const AsyncValue.loading()) {
+  /// [service] is injectable so the notifier can be tested without a backend.
+  AuthNotifier({SupabaseService? service})
+      : _db = service ?? dbService,
+        super(const AsyncValue.loading()) {
     _init();
   }
 
   void _init() {
-    if (!dbService.isUsingMock) {
+    if (!_db.isUsingMock) {
       try {
         // 1. If an active session is already present in memory on startup, load profile immediately
         if (Supabase.instance.client.auth.currentSession != null) {
@@ -74,7 +78,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
       state = const AsyncValue.loading();
     }
     try {
-      final owner = await dbService.getOwnerProfile();
+      final owner = await _db.getOwnerProfile();
       state = AsyncValue.data(owner);
     } catch (e, stack) {
       state = AsyncValue.error(e, stack);
@@ -83,7 +87,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
 
   Future<String?> login(String email, String password) async {
     try {
-      final success = await dbService.signIn(email, password);
+      final success = await _db.signIn(email, password);
       if (success) {
         await checkCurrentUser();
         return null;
@@ -109,7 +113,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
     String mobile,
   ) async {
     try {
-      final success = await dbService.signUp(email, password, fullName, businessName, mobile);
+      final success = await _db.signUp(email, password, fullName, businessName, mobile);
       if (success) {
         await checkCurrentUser();
         return null;
@@ -135,14 +139,14 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
     String? avatarUrl,
   }) async {
     try {
-      await dbService.updateOwnerProfile(
+      await _db.updateOwnerProfile(
         fullName: fullName,
         businessName: businessName,
         businessAddress: businessAddress,
         mobileNo: mobileNo,
         avatarUrl: avatarUrl,
       );
-      final updatedOwner = await dbService.getOwnerProfile();
+      final updatedOwner = await _db.getOwnerProfile();
       state = AsyncValue.data(updatedOwner);
       return null;
     } catch (e, stack) {
@@ -157,7 +161,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
 
   Future<void> uploadAndSetAvatar(File file) async {
     try {
-      final avatarUrl = await dbService.uploadOwnerAvatar(file);
+      final avatarUrl = await _db.uploadOwnerAvatar(file);
       if (avatarUrl != null) {
         await updateProfile(avatarUrl: avatarUrl);
       }
@@ -168,8 +172,8 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
 
   Future<void> upgradeSubscriptionPlan(String plan) async {
     try {
-      await dbService.updateSubscriptionPlan(plan);
-      final updatedOwner = await dbService.getOwnerProfile();
+      await _db.updateSubscriptionPlan(plan);
+      final updatedOwner = await _db.getOwnerProfile();
       state = AsyncValue.data(updatedOwner);
     } catch (e, stack) {
       state = AsyncValue.error(e, stack);
@@ -179,7 +183,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
   Future<void> logout() async {
     state = const AsyncValue.loading();
     try {
-      await dbService.signOut();
+      await _db.signOut();
       state = const AsyncValue.data(null);
     } catch (e, stack) {
       state = AsyncValue.error(e, stack);
@@ -189,7 +193,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
   Future<void> deleteAccount() async {
     state = const AsyncValue.loading();
     try {
-      await dbService.deleteAccount();
+      await _db.deleteAccount();
       state = const AsyncValue.data(null);
     } catch (e, stack) {
       state = AsyncValue.error(e, stack);
