@@ -100,13 +100,33 @@ void main() {
       verify(() => db.signOut()).called(1);
     });
 
-    test('logout failure is exposed as an error state', () async {
+    test('logout failure keeps the user signed in and rethrows', () async {
+      // e.g. there are unsynced changes: the user must not be signed out silently.
       final notifier = await createNotifier(initialOwner: _owner());
       when(() => db.signOut()).thenThrow(Exception('boom'));
 
-      await notifier.logout();
+      await expectLater(notifier.logout(), throwsException);
 
-      expect(notifier.state.hasError, isTrue);
+      expect(notifier.state.hasError, isFalse);
+      expect(notifier.state.value, isNotNull);
+    });
+
+    test('deleteAccount failure keeps the user signed in and rethrows', () async {
+      final notifier = await createNotifier(initialOwner: _owner());
+      when(() => db.deleteAccount()).thenThrow(Exception('server said no'));
+
+      await expectLater(notifier.deleteAccount(), throwsException);
+
+      expect(notifier.state.value, isNotNull);
+    });
+
+    test('deleteAccount success signs the user out', () async {
+      final notifier = await createNotifier(initialOwner: _owner());
+      when(() => db.deleteAccount()).thenAnswer((_) async {});
+
+      await notifier.deleteAccount();
+
+      expect(notifier.state.value, isNull);
     });
 
     test('updateProfile saves changes then refreshes the owner', () async {

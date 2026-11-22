@@ -170,9 +170,9 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
     }
   }
 
-  Future<void> upgradeSubscriptionPlan(String plan) async {
+  /// Re-reads the owner (and therefore the server-granted plan).
+  Future<void> refreshOwner() async {
     try {
-      await _db.updateSubscriptionPlan(plan);
       final updatedOwner = await _db.getOwnerProfile();
       state = AsyncValue.data(updatedOwner);
     } catch (e, stack) {
@@ -180,23 +180,31 @@ class AuthNotifier extends StateNotifier<AsyncValue<Owner?>> {
     }
   }
 
+  /// Signs out. Throws (and leaves the user signed in) if some changes could not be
+  /// uploaded yet, so nothing is silently lost.
   Future<void> logout() async {
+    final previous = state;
     state = const AsyncValue.loading();
     try {
       await _db.signOut();
       state = const AsyncValue.data(null);
-    } catch (e, stack) {
-      state = AsyncValue.error(e, stack);
+    } catch (e) {
+      state = previous;
+      rethrow;
     }
   }
 
+  /// Deletes the account. Throws (and leaves the user signed in) if the server
+  /// deletion failed, instead of claiming success.
   Future<void> deleteAccount() async {
+    final previous = state;
     state = const AsyncValue.loading();
     try {
       await _db.deleteAccount();
       state = const AsyncValue.data(null);
-    } catch (e, stack) {
-      state = AsyncValue.error(e, stack);
+    } catch (e) {
+      state = previous;
+      rethrow;
     }
   }
 }

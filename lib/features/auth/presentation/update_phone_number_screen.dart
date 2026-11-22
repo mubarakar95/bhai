@@ -87,7 +87,14 @@ class _UpdatePhoneNumberScreenState extends ConsumerState<UpdatePhoneNumberScree
               onPressed: _isLoading
                   ? null
                   : () async {
-                      await ref.read(authProvider.notifier).logout();
+                      final messenger = ScaffoldMessenger.of(context);
+                      try {
+                        await ref.read(authProvider.notifier).logout();
+                      } catch (e) {
+                        messenger.showSnackBar(
+                          SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+                        );
+                      }
                     },
               icon: const Icon(Icons.logout_rounded, size: 18, color: AppColors.textSecondary),
               label: const Text(

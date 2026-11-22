@@ -15,6 +15,7 @@ import csv
 import json
 import uuid
 import re
+import secrets
 import time
 import urllib.request
 import urllib.error
@@ -161,8 +162,10 @@ def main():
         if not phone:
             phone = f"90000000{int(uid):02d}"
             
-        first_word = re.sub(r"[^A-Za-z]", "", full_name.split()[0]).capitalize() or "Owner"
-        password = f"Bhai@{first_word}{uid}"
+        # Random per-account password (never derive it from public data such as the
+        # name / WordPress user id). Hand it to the owner out-of-band and make them
+        # change it, or send a password-reset email instead.
+        password = secrets.token_urlsafe(14)
         owner_passwords[email] = password
         
         user_uuid = None

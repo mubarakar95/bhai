@@ -26,10 +26,8 @@ build_number="$(( $(date +%s) / 60 ))"     # always increasing, so each build in
 
 echo "==> Building $BUILD_MODE APK (build $build_number)"
 flutter build apk "--$BUILD_MODE" \
-  --build-number="$build_number" \
-  --dart-define=DEV_FEEDBACK=true \
-  --dart-define=FEEDBACK_REPO="${FEEDBACK_REPO:-}" \
-  --dart-define=FEEDBACK_TOKEN="${FEEDBACK_TOKEN:-}"
+  --build-number="$build_number"
+# NOTE: never pass tokens via --dart-define: they end up readable inside the APK.
 
 apk="build/app/outputs/flutter-apk/app-$BUILD_MODE.apk"
 [ -f "$apk" ] || { echo "APK not found at $apk" >&2; exit 1; }

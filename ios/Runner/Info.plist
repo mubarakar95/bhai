@@ -76,6 +76,19 @@
 		<string>Bhai App requires photo library access to upload tenant identity proofs, Aadhaar photos, and property photos.</string>
 		<key>NSPhotoLibraryAddUsageDescription</key>
 		<string>Bhai App requires permission to save generated payment QR codes and guest reports to your photo gallery.</string>
+		<key>CFBundleURLTypes</key>
+		<array>
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLName</key>
+				<string>com.bhaiapp.bhaiapp.auth</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>bhai</string>
+				</array>
+			</dict>
+		</array>
 		<key>LSApplicationQueriesSchemes</key>
 		<array>
 			<string>upi</string>

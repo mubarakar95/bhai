@@ -67,7 +67,10 @@ class SupabaseService {
           }
         });
       } catch (e) {
-        debugPrint('Supabase init failed, falling back to mock: $e');
+        debugPrint('Supabase init failed: $e');
+        // Never silently fall back to demo data in a release build: the user would
+        // be looking at fake records (and a login that ignores passwords).
+        if (!kDebugMode) rethrow;
         _useMock = true;
         await _loadMockDataFromDisk();
       }
@@ -739,8 +742,8 @@ class SupabaseService {
     String? id,
     Map<String, dynamic> data = const {},
   }) {
-    // Only queue items if cloud sync is supported for this account
-    if (!isCloudSyncAllowed) return;
+    // Always queue: writes are attempted online first for every plan, so dropping
+    // offline writes for non-Pro accounts silently lost data.
     _pendingSyncQueue.add({
       'table': table,
       'action': action,
@@ -751,56 +754,70 @@ class SupabaseService {
     _saveOfflineDataToDisk();
   }
 
-  bool get isCloudSyncAllowed {
-    final owner = _cachedOwner;
-    return SubscriptionPlanConfig.isPaidPlan(owner?.subscriptionPlan) ||
-        SubscriptionPlanConfig.isTrialActive(owner);
+  /// Items the server permanently rejected (RLS / constraint / bad payload). They are
+  /// dropped from the retry queue so they cannot block everything queued behind them.
+  final List<Map<String, dynamic>> rejectedSyncItems = [];
+
+  /// True for errors that will never succeed on retry (as opposed to being offline).
+  bool _isPermanentSyncError(Object e) {
+    if (e is PostgrestException) {
+      final code = e.code ?? '';
+      // Expired/invalid JWT is recoverable (token refresh) - keep the item.
+      if (code == 'PGRST301' || code == 'PGRST303') return false;
+      final status = int.tryParse(e.code ?? '');
+      if (status != null && status >= 500) return false;
+      return true;
+    }
+    return false;
   }
 
+  bool _syncFlushInProgress = false;
+
   Future<int> _processPendingSyncQueue() async {
-    if (_useMock || _pendingSyncQueue.isEmpty) return 0;
-    // Free tier users do not sync to Cloud
-    if (!isCloudSyncAllowed) return 0;
+    if (_useMock || _pendingSyncQueue.isEmpty || _syncFlushInProgress) return 0;
+    _syncFlushInProgress = true;
     final toProcess = List<Map<String, dynamic>>.from(_pendingSyncQueue);
     int syncedCount = 0;
 
-    for (var item in toProcess) {
-      final table = item['table'] as String;
-      final action = item['action'] as String;
-      final data = Map<String, dynamic>.from((item['data'] as Map?) ?? {});
-      final id = item['id'] as String?;
+    try {
+      for (var item in toProcess) {
+        final table = item['table'] as String;
+        final action = item['action'] as String;
+        final data = Map<String, dynamic>.from((item['data'] as Map?) ?? {});
+        final id = item['id'] as String?;
 
-      if (table == 'stays') {
-        data.remove('persons');
-        data.remove('rooms');
-      }
-
-      try {
-        if (action == 'insert') {
-          await Supabase.instance.client.from(table).upsert(data);
-        } else if (action == 'update' && id != null) {
-          await Supabase.instance.client.from(table).update(data).eq('id', id);
-        } else if (action == 'delete' && id != null) {
-          await Supabase.instance.client.from(table).delete().eq('id', id);
-        }
-        _pendingSyncQueue.remove(item);
-        syncedCount++;
-      } catch (e) {
-        debugPrint('Pending sync item notice for $table: $e');
-        // If it's a schema cache mismatch for nested properties, strip and retry once
-        if (table == 'stays' && (data.containsKey('persons') || data.containsKey('rooms'))) {
+        if (table == 'stays') {
           data.remove('persons');
           data.remove('rooms');
-          try {
-            await Supabase.instance.client.from(table).upsert(data);
-            _pendingSyncQueue.remove(item);
-            syncedCount++;
-            continue;
-          } catch (_) {}
         }
-        // Stop on first persistent failure to keep sequence intact
-        break;
+
+        try {
+          if (action == 'insert') {
+            // Idempotent: a row that already reached the server is not an error.
+            await Supabase.instance.client
+                .from(table)
+                .upsert(data, ignoreDuplicates: true);
+          } else if (action == 'update' && id != null) {
+            await Supabase.instance.client.from(table).update(data).eq('id', id);
+          } else if (action == 'delete' && id != null) {
+            await Supabase.instance.client.from(table).delete().eq('id', id);
+          }
+          _pendingSyncQueue.remove(item);
+          syncedCount++;
+        } catch (e) {
+          if (_isPermanentSyncError(e)) {
+            debugPrint('Dropping unsyncable $action on $table (server rejected): $e');
+            _pendingSyncQueue.remove(item);
+            rejectedSyncItems.add(item);
+            syncedCount++; // persist the queue change below
+            continue;
+          }
+          debugPrint('Pending sync paused at $table (offline?): $e');
+          break; // transient failure: keep order, retry later
+        }
       }
+    } finally {
+      _syncFlushInProgress = false;
     }
 
     if (syncedCount > 0) {
@@ -810,7 +827,6 @@ class SupabaseService {
   }
 
   Future<int> syncPendingData() async {
-    if (!isCloudSyncAllowed) return 0;
     return await _processPendingSyncQueue();
   }
 
@@ -1084,10 +1100,17 @@ class SupabaseService {
           return finalOwner;
         }
 
-        // Auto-create owner profile in public.owners if not present
-        final map = fallbackOwner.toJson();
-        map['created_at'] = fallbackOwner.createdAt.toIso8601String();
-        await Supabase.instance.client.from('owners').upsert(map);
+        // Auto-create owner profile in public.owners if not present. A server trigger
+        // normally does this at signup; this is only a fallback. Only plain profile
+        // columns are sent (the plan and created_at are server-controlled, and
+        // `avatar_url` is not a column of public.owners).
+        await Supabase.instance.client.from('owners').upsert({
+          'id': fallbackOwner.id,
+          'full_name': fallbackOwner.fullName,
+          'business_name': fallbackOwner.businessName,
+          'mobile_no': fallbackOwner.mobileNo,
+          'email': fallbackOwner.email,
+        }, ignoreDuplicates: true);
         _cachedOwner = fallbackOwner;
         await _saveOfflineDataToDisk();
         try {
@@ -1113,18 +1136,25 @@ class SupabaseService {
         return null;
       }
     } else {
+      // Other owners' profiles are not readable; the RPC only returns contact
+      // details of an owner who blacklisted a guest (so the warning can name them).
       try {
         final res = await Supabase.instance.client
-            .from('owners')
-            .select()
-            .eq('id', ownerId)
-            .maybeSingle();
-        if (res != null) {
-          return Owner.fromJson(res);
-        }
-        return null;
+            .rpc('get_owner_contact', params: {'p_owner_id': ownerId});
+        final rows = res as List;
+        if (rows.isEmpty) return null;
+        final row = Map<String, dynamic>.from(rows.first as Map);
+        return Owner(
+          id: row['id'].toString(),
+          fullName: row['full_name'] as String? ?? '',
+          businessName: row['business_name'] as String?,
+          mobileNo: row['mobile_no'] as String? ?? '',
+          email: '',
+          subscriptionPlan: 'free',
+          createdAt: DateTime.now(),
+        );
       } catch (e) {
-        debugPrint('Error getting owner by id ($ownerId): $e');
+        debugPrint('Error getting owner contact ($ownerId): $e');
         return null;
       }
     }
@@ -1168,11 +1198,13 @@ class SupabaseService {
         }
       }
 
+      // Auth metadata may carry the avatar; public.owners has no avatar_url column.
       final updates = <String, dynamic>{};
       if (fullName != null) updates['full_name'] = fullName;
       if (businessName != null) updates['business_name'] = businessName;
       if (businessAddress != null) updates['business_address'] = businessAddress;
       if (mobileNo != null) updates['mobile_no'] = mobileNo;
+      final dbUpdates = Map<String, dynamic>.from(updates);
       if (avatarUrl != null) updates['avatar_url'] = avatarUrl;
 
       if (updates.isNotEmpty) {
@@ -1184,23 +1216,25 @@ class SupabaseService {
           debugPrint('Error updating user metadata in Supabase Auth: $e');
         }
 
-        try {
-          await Supabase.instance.client
-              .from('owners')
-              .update(updates)
-              .eq('id', ownerId);
-        } catch (e) {
-          // If schema cache was stale or column missing, fallback without business_address
-          if (e.toString().contains('business_address') && updates.containsKey('business_address')) {
-            final fallbackUpdates = Map<String, dynamic>.from(updates)..remove('business_address');
-            if (fallbackUpdates.isNotEmpty) {
-              await Supabase.instance.client
-                  .from('owners')
-                  .update(fallbackUpdates)
-                  .eq('id', ownerId);
+        if (dbUpdates.isNotEmpty) {
+          try {
+            await Supabase.instance.client
+                .from('owners')
+                .update(dbUpdates)
+                .eq('id', ownerId);
+          } catch (e) {
+            // If schema cache was stale or column missing, fallback without business_address
+            if (e.toString().contains('business_address') && dbUpdates.containsKey('business_address')) {
+              final fallbackUpdates = Map<String, dynamic>.from(dbUpdates)..remove('business_address');
+              if (fallbackUpdates.isNotEmpty) {
+                await Supabase.instance.client
+                    .from('owners')
+                    .update(fallbackUpdates)
+                    .eq('id', ownerId);
+              }
+            } else {
+              rethrow;
             }
-          } else {
-            rethrow;
           }
         }
 
@@ -1217,50 +1251,9 @@ class SupabaseService {
     }
   }
 
-  Future<void> updateSubscriptionPlan(String plan) async {
-    final ownerId = currentOwnerId ?? _currentOwnerId;
-    if (ownerId == null) return;
-
-    if (_useMock) {
-      final index = _mockOwners.indexWhere((o) => o.id == ownerId);
-      if (index != -1) {
-        final existing = _mockOwners[index];
-        _mockOwners[index] = existing.copyWith(subscriptionPlan: plan);
-        await _saveMockDataToDisk();
-      }
-    } else {
-      // 1. Optimistically update local cached owner immediately
-      if (_cachedOwner != null && _cachedOwner!.id == ownerId) {
-        _cachedOwner = _cachedOwner!.copyWith(subscriptionPlan: plan);
-        await _saveOfflineDataToDisk();
-      }
-
-      // 2. Try Supabase update or queue
-      try {
-        await ensureOwnerRecordExists(ownerId);
-        await Supabase.instance.client
-            .from('owners')
-            .update({'subscription_plan': plan})
-            .eq('id', ownerId);
-      } catch (e) {
-        debugPrint('Offline: queued subscription plan update for owners table: $e');
-        _queuePendingSync(
-          table: 'owners',
-          action: 'update',
-          id: ownerId,
-          data: {'subscription_plan': plan},
-        );
-      }
-
-      try {
-        await Supabase.instance.client.auth.updateUser(
-          UserAttributes(data: {'subscription_plan': plan}),
-        );
-      } catch (e) {
-        debugPrint('Notice updating subscription plan in auth metadata: $e');
-      }
-    }
-  }
+  // NOTE: there is intentionally no client-side "set subscription plan" API.
+  // The plan is granted server-side only (owners.subscription_plan is protected by
+  // a database trigger); the client can only read it.
 
   Future<String?> uploadOwnerAvatar(File file) async {
     final ownerId = currentOwnerId;
@@ -1274,7 +1267,8 @@ class SupabaseService {
 
       if (!_useMock) {
         try {
-          final storagePath = 'avatars/$fileName';
+          // Storage policy: writes are only allowed inside your own <uid>/ folder.
+          final storagePath = '$ownerId/$fileName';
           await Supabase.instance.client.storage
               .from('avatars')
               .upload(storagePath, localFile, fileOptions: const FileOptions(upsert: true));
@@ -1358,23 +1352,8 @@ class SupabaseService {
       );
 
       if (res.user != null) {
-        final newOwner = Owner(
-          id: res.user!.id,
-          fullName: fullName,
-          businessName: businessName,
-          mobileNo: mobile,
-          email: email,
-          subscriptionPlan: 'free',
-          createdAt: DateTime.now(),
-        );
-        final map = newOwner.toJson();
-        map['created_at'] = newOwner.createdAt.toIso8601String();
-        try {
-          await Supabase.instance.client.from('owners').upsert(map);
-        } catch (e) {
-          debugPrint('Warning: Failed to insert owner profile row directly: $e');
-        }
-
+        // The owners row is created server-side by the on_auth_user_created_owner
+        // trigger from the signup metadata above, so nothing to insert here.
         if (res.session == null) {
           throw 'Account registered! Please check your email to confirm your account, then sign in.';
         }
@@ -1384,7 +1363,12 @@ class SupabaseService {
     }
   }
 
-  Future<void> signOut() async {
+  /// Signs out and wipes the local cache.
+  ///
+  /// Unless [force] is set, any changes still waiting to sync are flushed first and
+  /// sign-out is refused (with a readable message) if some could not be uploaded -
+  /// otherwise those payments / check-ins would be silently destroyed.
+  Future<void> signOut({bool force = false}) async {
     if (_useMock) {
       _currentOwnerId = null;
       await _saveMockDataToDisk();
@@ -1393,6 +1377,16 @@ class SupabaseService {
         await prefs.remove('persisted_mock_owner_id');
       } catch (_) {}
     } else {
+      if (!force && _pendingSyncQueue.isNotEmpty) {
+        try {
+          await _processPendingSyncQueue().timeout(const Duration(seconds: 10));
+        } catch (_) {}
+        if (_pendingSyncQueue.isNotEmpty) {
+          throw Exception(
+              '${_pendingSyncQueue.length} change(s) have not been uploaded yet. '
+              'Connect to the internet and try again, so nothing is lost.');
+        }
+      }
       await Supabase.instance.client.auth.signOut();
       _cachedOwner = null;
       _cachedProperties.clear();
@@ -1401,12 +1395,61 @@ class SupabaseService {
       _cachedStays.clear();
       _cachedPayments.clear();
       _pendingSyncQueue.clear();
+      rejectedSyncItems.clear();
+      _signedUrlCache.clear();
       await _saveOfflineDataToDisk();
+      await _deleteLocalPhotoCache();
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove('persisted_owner_id');
         await prefs.remove('persisted_owner_data');
       } catch (_) {}
+    }
+  }
+
+  /// Removes locally cached guest / Aadhaar photos (identity documents must not
+  /// outlive the session on a shared device).
+  Future<void> _deleteLocalPhotoCache() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final dir = Directory('${appDir.path}/offline_photos');
+      if (await dir.exists()) await dir.delete(recursive: true);
+      for (final f in appDir.listSync()) {
+        final name = f.path.split('/').last;
+        if (f is File && (name.startsWith('avatar_') || name.startsWith('owner_avatar_'))) {
+          await f.delete();
+        }
+      }
+    } catch (e) {
+      debugPrint('Local photo cache cleanup failed: $e');
+    }
+  }
+
+  final Map<String, ({String url, DateTime expires})> _signedUrlCache = {};
+
+  /// Private buckets (Aadhaar photos) have no public URL. Converts a stored
+  /// `/storage/v1/object/public/<bucket>/<path>` URL into a short-lived signed URL.
+  /// Other URLs are returned unchanged.
+  Future<String?> resolveStorageUrl(String url) async {
+    const marker = '/storage/v1/object/public/aadhaar-photos/';
+    final idx = url.indexOf(marker);
+    if (idx == -1 || _useMock) return url;
+    final cached = _signedUrlCache[url];
+    if (cached != null && cached.expires.isAfter(DateTime.now())) return cached.url;
+    try {
+      var path = url.substring(idx + marker.length);
+      final q = path.indexOf('?');
+      if (q != -1) path = path.substring(0, q);
+      path = Uri.decodeComponent(path);
+      final signed = await Supabase.instance.client.storage
+          .from('aadhaar-photos')
+          .createSignedUrl(path, 3600);
+      _signedUrlCache[url] =
+          (url: signed, expires: DateTime.now().add(const Duration(minutes: 50)));
+      return signed;
+    } catch (e) {
+      debugPrint('Could not sign storage URL: $e');
+      return null;
     }
   }
 
@@ -1428,18 +1471,31 @@ class SupabaseService {
 
     if (ownerId == null || ownerId.isEmpty) return;
 
-    try {
-      // 1. Try calling backend delete_user_account RPC function if configured
-      await Supabase.instance.client.rpc('delete_user_account');
-    } catch (_) {
-      // 2. Direct database cascade deletion fallback
+    final client = Supabase.instance.client;
+
+    // 1. Remove this owner's uploaded identity documents and avatars from storage.
+    for (final bucket in const ['aadhaar-photos', 'avatars']) {
       try {
-        await Supabase.instance.client.from('owners').delete().eq('id', ownerId);
-      } catch (_) {}
-    } finally {
-      // 3. Clear local storage, session tokens, and sign out cleanly
-      await signOut();
+        for (var round = 0; round < 20; round++) {
+          final files = await client.storage
+              .from(bucket)
+              .list(path: ownerId, searchOptions: const SearchOptions(limit: 100));
+          if (files.isEmpty) break;
+          await client.storage
+              .from(bucket)
+              .remove(files.map((f) => '$ownerId/${f.name}').toList());
+        }
+      } catch (e) {
+        debugPrint('Storage cleanup for $bucket failed: $e');
+      }
     }
+
+    // 2. Delete the account server-side. This MUST succeed: if it fails we surface the
+    //    error and keep the user signed in rather than pretending the account is gone.
+    await client.rpc('delete_user_account');
+
+    // 3. Wipe local state.
+    await signOut(force: true);
   }
 
   // --- Properties API ---
@@ -1456,17 +1512,16 @@ class SupabaseService {
       if (res == null) {
         final user = Supabase.instance.client.auth.currentUser;
         final meta = user?.userMetadata ?? {};
+        // Plain profile columns only: plan / created_at are server-controlled and
+        // public.owners has no updated_at column.
         final map = {
           'id': ownerId,
           'full_name': meta['full_name'] as String? ?? user?.email?.split('@').first ?? 'Property Owner',
           'business_name': meta['business_name'] as String? ?? 'Bhai App PG',
           'mobile_no': meta['mobile_no'] as String? ?? '',
           'email': user?.email ?? '',
-          'subscription_plan': 'free',
-          'created_at': DateTime.now().toIso8601String(),
-          'updated_at': DateTime.now().toIso8601String(),
         };
-        await Supabase.instance.client.from('owners').upsert(map);
+        await Supabase.instance.client.from('owners').upsert(map, ignoreDuplicates: true);
       }
     } catch (e) {
       debugPrint('Notice ensuring owner record in database: $e');
@@ -1943,15 +1998,14 @@ class SupabaseService {
       final matches = _mockPersons.where((p) => p.aadhaarNo == clean);
       return matches.isNotEmpty ? matches.first : null;
     } else {
-      // 1. Query Supabase for real-time accurate verification
+      // 1. Exact-match lookup through the server RPC (the guest registry is shared
+      //    between owners, but is not directly readable table-wide).
       try {
         final res = await Supabase.instance.client
-            .from('persons')
-            .select()
-            .eq('aadhaar_no', clean)
-            .maybeSingle();
-        if (res != null) {
-          final person = Person.fromJson(res);
+            .rpc('lookup_person', params: {'p_aadhaar': clean});
+        final rows = res as List;
+        if (rows.isNotEmpty) {
+          final person = Person.fromJson(Map<String, dynamic>.from(rows.first as Map));
           _cachedPersons.removeWhere((p) => p.id == person.id);
           _cachedPersons.add(person);
           await _saveOfflineDataToDisk();
@@ -1978,23 +2032,9 @@ class SupabaseService {
       final matches = _mockPersons.where((p) => p.mobileNo.replaceAll(RegExp(r'\D'), '') == clean);
       return matches.isNotEmpty ? matches.first : null;
     } else {
-      try {
-        final res = await Supabase.instance.client
-            .from('persons')
-            .select()
-            .eq('mobile_no', clean)
-            .maybeSingle();
-        if (res != null) {
-          final person = Person.fromJson(res);
-          _cachedPersons.removeWhere((p) => p.id == person.id);
-          _cachedPersons.add(person);
-          await _saveOfflineDataToDisk();
-          return person;
-        }
-      } catch (e) {
-        debugPrint('Error searching guest by mobile (offline fallback): $e');
-      }
-
+      // Mobile numbers are shared (families) and must not be usable to enumerate
+      // other owners' guests, so this only searches records already visible to
+      // this owner (the local cache).
       final cachedMatches = _cachedPersons.where((p) => p.mobileNo.replaceAll(RegExp(r'\D'), '') == clean);
       if (cachedMatches.isNotEmpty) {
         return cachedMatches.first;
@@ -2027,24 +2067,15 @@ class SupabaseService {
       }
     }
 
-    // 2. Query Supabase for real-time blacklist status
+    // 2. Query the server for real-time blacklist status (parameters are bound by
+    //    the RPC; no user input is interpolated into a filter string).
     try {
-      var query = Supabase.instance.client
-          .from('persons')
-          .select()
-          .eq('is_blacklisted', true);
-
-      if (cleanAadhaar.isNotEmpty && cleanMobile.isNotEmpty) {
-        query = query.or('aadhaar_no.eq.$cleanAadhaar,mobile_no.eq.$cleanMobile');
-      } else if (cleanAadhaar.isNotEmpty) {
-        query = query.eq('aadhaar_no', cleanAadhaar);
-      } else {
-        query = query.eq('mobile_no', cleanMobile);
-      }
-
-      final res = await query.limit(1);
+      final res = await Supabase.instance.client.rpc('check_blacklist', params: {
+        'p_aadhaar': cleanAadhaar.isEmpty ? null : cleanAadhaar,
+        'p_mobile': cleanMobile.isEmpty ? null : cleanMobile,
+      });
       if ((res as List).isNotEmpty) {
-        final p = Person.fromJson(res.first);
+        final p = Person.fromJson(Map<String, dynamic>.from(res.first as Map));
         _cachedPersons.removeWhere((item) => item.id == p.id);
         _cachedPersons.add(p);
         await _saveOfflineDataToDisk();
@@ -2113,6 +2144,26 @@ class SupabaseService {
           ? person.id
           : (existingBlacklist?.id.isNotEmpty == true ? existingBlacklist!.id : const Uuid().v4());
       final ownerId = currentOwnerId ?? _currentOwnerId ?? '';
+      if (ownerId.isEmpty) {
+        throw Exception('Please sign in again to continue.');
+      }
+
+      // A guest profile created by ANOTHER owner is a shared record: never overwrite
+      // it (the server also rejects it). Reuse it as-is for the new stay.
+      final existingCreator = (existingBlacklist?.createdByOwnerId.isNotEmpty == true)
+          ? existingBlacklist!.createdByOwnerId
+          : person.createdByOwnerId;
+      if (guestId.isNotEmpty &&
+          (person.id.isNotEmpty || existingBlacklist != null) &&
+          existingCreator.isNotEmpty &&
+          existingCreator != ownerId) {
+        final shared = existingBlacklist ?? getCachedPersonById(guestId) ?? person;
+        _cachedPersons.removeWhere((p) => p.id == shared.id);
+        _cachedPersons.add(shared);
+        await _saveOfflineDataToDisk();
+        return shared;
+      }
+
       final newPerson = Person(
         id: guestId,
         name: person.name,
@@ -2161,6 +2212,12 @@ class SupabaseService {
         await _saveOfflineDataToDisk();
         return serverPerson;
       } catch (e) {
+        if (_isPermanentSyncError(e)) {
+          // Rejected by the server (not offline): undo the optimistic cache entry.
+          _cachedPersons.removeWhere((p) => p.id == guestId);
+          await _saveOfflineDataToDisk();
+          rethrow;
+        }
         debugPrint('Offline: queued addGuest ($e)');
         _queuePendingSync(table: 'persons', action: 'insert', data: data);
         return newPerson;
@@ -2185,7 +2242,15 @@ class SupabaseService {
       }
       await _saveOfflineDataToDisk();
 
-      final data = person.toJson();
+      // Blacklist state, ownership and id are server-controlled: never sent from here.
+      final data = person.toJson()
+        ..remove('id')
+        ..remove('created_by_owner_id')
+        ..remove('created_at')
+        ..remove('is_blacklisted')
+        ..remove('blacklist_reason')
+        ..remove('blacklisted_by')
+        ..remove('blacklisted_at');
       try {
         final res = await Supabase.instance.client
             .from('persons')
@@ -2199,6 +2264,7 @@ class SupabaseService {
         await _saveOfflineDataToDisk();
         return serverPerson;
       } catch (e) {
+        if (_isPermanentSyncError(e)) rethrow;
         debugPrint('Offline: queued updateGuest ($e)');
         _queuePendingSync(table: 'persons', action: 'update', id: person.id, data: data);
         return person;
@@ -2246,8 +2312,20 @@ class SupabaseService {
       ));
       await _saveMockDataToDisk();
     } else {
-      final ownerId = currentOwnerId ?? 'global';
-      // 1. Optimistically update local cache
+      final ownerId = currentOwnerId;
+      if (ownerId == null || ownerId.isEmpty) {
+        throw Exception('Please sign in again to continue.');
+      }
+      // 0. The server decides: only an owner who has hosted the guest may report them,
+      //    and every report is logged. Errors are surfaced (no direct-table fallback,
+      //    which would bypass those rules), and the cache only changes on success.
+      await Supabase.instance.client.rpc('blacklist_guest', params: {
+        'p_person_id': personId,
+        'p_reason': reason,
+        'p_report_type': reportType.toString().split('.').last,
+      });
+
+      // 1. Update local cache
       int pIdx = _cachedPersons.indexWhere((p) => p.id == personId);
       if (pIdx == -1) {
         try {
@@ -2309,37 +2387,6 @@ class SupabaseService {
         await _saveOfflineDataToDisk();
       }
 
-      // 2. Sync to Supabase RPC with fallback to direct table update & queue
-      try {
-        await Supabase.instance.client.rpc('blacklist_guest', params: {
-          'p_person_id': personId,
-          'p_reason': reason,
-          'p_report_type': reportType.toString().split('.').last,
-        });
-      } catch (e) {
-        debugPrint('RPC blacklist_guest notice ($e). Fallback to table update...');
-        try {
-          await Supabase.instance.client.from('persons').update({
-            'is_blacklisted': true,
-            'blacklist_reason': reason,
-            'blacklisted_by': ownerId,
-            'blacklisted_at': DateTime.now().toIso8601String(),
-          }).eq('id', personId);
-        } catch (tblErr) {
-          debugPrint('Offline: queued blacklist sync ($tblErr)');
-          _queuePendingSync(
-            table: 'persons',
-            action: 'update',
-            id: personId,
-            data: {
-              'is_blacklisted': true,
-              'blacklist_reason': reason,
-              'blacklisted_by': ownerId,
-              'blacklisted_at': DateTime.now().toIso8601String(),
-            },
-          );
-        }
-      }
     }
   }
 
@@ -2391,7 +2438,12 @@ class SupabaseService {
       }
       await _saveMockDataToDisk();
     } else {
-      // 1. Optimistically update local cache
+      // 0. Server-side ownership rule is authoritative; errors propagate to the UI.
+      await Supabase.instance.client.rpc('unblacklist_guest', params: {
+        'p_person_id': personId,
+      });
+
+      // 1. Update local cache
       final pIdx = _cachedPersons.indexWhere((p) => p.id == personId);
       if (pIdx != -1) {
         final p = _cachedPersons[pIdx];
@@ -2442,35 +2494,6 @@ class SupabaseService {
         await _saveOfflineDataToDisk();
       }
 
-      // 2. Call unblacklist_guest RPC with fallback
-      try {
-        await Supabase.instance.client.rpc('unblacklist_guest', params: {
-          'p_person_id': personId,
-        });
-      } catch (e) {
-        debugPrint('RPC unblacklist_guest notice ($e). Fallback to table update...');
-        try {
-          await Supabase.instance.client.from('persons').update({
-            'is_blacklisted': false,
-            'blacklist_reason': null,
-            'blacklisted_by': null,
-            'blacklisted_at': null,
-          }).eq('id', personId);
-        } catch (tblErr) {
-          debugPrint('Offline: queued unblacklist sync ($tblErr)');
-          _queuePendingSync(
-            table: 'persons',
-            action: 'update',
-            id: personId,
-            data: {
-              'is_blacklisted': false,
-              'blacklist_reason': null,
-              'blacklisted_by': null,
-              'blacklisted_at': null,
-            },
-          );
-        }
-      }
     }
   }
 
@@ -2485,11 +2508,10 @@ class SupabaseService {
       return getCachedBlacklistedPersons();
     }
     try {
-      final res = await Supabase.instance.client
-          .from('persons')
-          .select()
-          .eq('is_blacklisted', true);
-      final list = (res as List).map((j) => Person.fromJson(j)).toList();
+      final res = await Supabase.instance.client.rpc('list_blacklisted');
+      final list = (res as List)
+          .map((j) => Person.fromJson(Map<String, dynamic>.from(j as Map)))
+          .toList();
       for (var p in list) {
         final idx = _cachedPersons.indexWhere((cp) => cp.id == p.id);
         if (idx == -1) {
@@ -2691,10 +2713,10 @@ class SupabaseService {
     } else {
       try {
         final res = await Supabase.instance.client
-            .from('guest_stay_history')
-            .select()
-            .eq('person_id', personId);
-        return (res as List).map((json) => GuestStayHistory.fromJson(json)).toList();
+            .rpc('get_guest_stay_history', params: {'p_person_id': personId});
+        return (res as List)
+            .map((json) => GuestStayHistory.fromJson(Map<String, dynamic>.from(json as Map)))
+            .toList();
       } catch (e) {
         debugPrint('Error fetching guest stay history: $e');
         return [];
@@ -2755,27 +2777,13 @@ class SupabaseService {
       return null;
     } else {
       try {
+        // Cross-owner check ("is this guest already staying somewhere else?")
+        // goes through an RPC; stays of other owners are not directly readable.
         final res = await Supabase.instance.client
-            .from('stays')
-            .select('id, person_id, check_in_date, check_out_date, status, properties(name, city, property_type), rooms(room_number)')
-            .eq('person_id', personId)
-            .eq('status', 'active')
-            .maybeSingle();
-
-        if (res != null) {
-          final prop = res['properties'] as Map<String, dynamic>?;
-          final room = res['rooms'] as Map<String, dynamic>?;
-          return GuestStayHistory(
-            stayId: res['id'].toString(),
-            personId: res['person_id'].toString(),
-            checkInDate: DateTime.parse(res['check_in_date'] as String),
-            checkOutDate: res['check_out_date'] != null ? DateTime.parse(res['check_out_date'] as String) : null,
-            status: res['status'] as String? ?? 'active',
-            propertyType: prop?['property_type'] as String? ?? 'PG',
-            propertyName: prop?['name'] as String? ?? 'Another Registered Property',
-            propertyCity: prop?['city'] as String? ?? 'Kerala',
-            roomNumber: room?['room_number'] as String? ?? 'N/A',
-          );
+            .rpc('get_active_stay_for_person', params: {'p_person_id': personId});
+        final rows = res as List;
+        if (rows.isNotEmpty) {
+          return GuestStayHistory.fromJson(Map<String, dynamic>.from(rows.first as Map));
         }
         return null;
       } catch (e) {
@@ -2786,6 +2794,77 @@ class SupabaseService {
   }
 
   // --- Stays / Bookings API ---
+
+  Future<void> _syncBlacklistedIntoCache() async {
+    try {
+      final bRes = await Supabase.instance.client.rpc('list_blacklisted');
+      for (var bj in (bRes as List)) {
+        final bp = Person.fromJson(Map<String, dynamic>.from(bj as Map));
+        final idx = _cachedPersons.indexWhere((cp) => cp.id == bp.id);
+        if (idx == -1) {
+          _cachedPersons.add(bp);
+        } else {
+          _cachedPersons[idx] = bp;
+        }
+      }
+    } catch (e) {
+      debugPrint('Notice syncing blacklist: $e');
+    }
+  }
+
+  /// Loads the whole payment ledger visible to this owner in one paginated pass.
+  ///
+  /// Dashboard balances are computed from the local payment cache, which used to be
+  /// filled lazily per stay - so on a fresh install / new device every stay looked
+  /// completely unpaid until it was opened. Payments still waiting to sync are kept.
+  Future<void> _syncAllPayments() async {
+    try {
+      final all = <Payment>[];
+      const pageSize = 1000; // PostgREST caps a response at 1000 rows
+      for (var from = 0;; from += pageSize) {
+        final res = await Supabase.instance.client
+            .from('payments')
+            .select()
+            .order('created_at', ascending: true)
+            .order('id', ascending: true)
+            .range(from, from + pageSize - 1);
+        final rows = res as List;
+        all.addAll(rows.map((j) => Payment.fromJson(Map<String, dynamic>.from(j as Map))));
+        if (rows.length < pageSize) break;
+      }
+
+      final byStay = <String, List<Payment>>{};
+      for (final p in all) {
+        byStay.putIfAbsent(p.stayId, () => []).add(p);
+      }
+      for (final list in byStay.values) {
+        list.sort((a, b) => b.paidAt.compareTo(a.paidAt));
+      }
+
+      final stayIds = {..._cachedPayments.keys, ...byStay.keys};
+      for (final sid in stayIds) {
+        _cachedPayments[sid] = _mergePendingPayments(sid, byStay[sid] ?? const []);
+      }
+      await _saveOfflineDataToDisk();
+    } catch (e) {
+      debugPrint('Notice syncing payment ledger: $e');
+    }
+  }
+
+  /// Server list + local payments that are queued but not yet uploaded, so a
+  /// background refresh never makes an offline-recorded payment disappear.
+  List<Payment> _mergePendingPayments(String stayId, List<Payment> server) {
+    final pendingIds = _pendingSyncQueue
+        .where((i) => i['table'] == 'payments' && i['action'] == 'insert')
+        .map((i) => (i['data'] as Map?)?['id']?.toString())
+        .whereType<String>()
+        .toSet();
+    if (pendingIds.isEmpty) return List<Payment>.from(server);
+    final serverIds = server.map((p) => p.id).toSet();
+    final local = (_cachedPayments[stayId] ?? const <Payment>[])
+        .where((p) => pendingIds.contains(p.id) && !serverIds.contains(p.id));
+    return [...local, ...server];
+  }
 
   Future<List<Stay>> getStays({bool activeOnly = false}) async {
     if (_useMock) {
@@ -2859,21 +2938,8 @@ class SupabaseService {
         }).toList();
 
         // Also fetch all blacklisted persons so they are available in memory/offline
-        try {
-          final bRes = await Supabase.instance.client
-              .from('persons')
-              .select()
-              .eq('is_blacklisted', true);
-          for (var bj in (bRes as List)) {
-            final bp = Person.fromJson(bj);
-            final idx = _cachedPersons.indexWhere((cp) => cp.id == bp.id);
-            if (idx == -1) {
-              _cachedPersons.add(bp);
-            } else {
-              _cachedPersons[idx] = bp;
-            }
-          }
-        } catch (_) {}
+        await _syncBlacklistedIntoCache();
+        await _syncAllPayments();
 
         // Preserve any local stays that are still pending sync
         final pendingStayIds = _pendingSyncQueue
@@ -2932,22 +2998,9 @@ class SupabaseService {
           return s;
         }).toList();
 
-        // Also sync blacklisted persons
-        try {
-          final bRes = await Supabase.instance.client
-              .from('persons')
-              .select()
-              .eq('is_blacklisted', true);
-          for (var bj in (bRes as List)) {
-            final bp = Person.fromJson(bj);
-            final idx = _cachedPersons.indexWhere((cp) => cp.id == bp.id);
-            if (idx == -1) {
-              _cachedPersons.add(bp);
-            } else {
-              _cachedPersons[idx] = bp;
-            }
-          }
-        } catch (_) {}
+        // Also sync blacklisted persons + the full payment ledger
+        await _syncBlacklistedIntoCache();
+        await _syncAllPayments();
 
         final pendingStayIds = _pendingSyncQueue
             .where((item) => item['table'] == 'stays')
@@ -2974,7 +3027,10 @@ class SupabaseService {
   }
 
   Future<Stay> addStay(Stay stay) async {
-    final ownerId = currentOwnerId ?? _currentOwnerId ?? '11111111-1111-1111-1111-111111111111';
+    final ownerId = currentOwnerId ?? _currentOwnerId ?? '';
+    if (!_useMock && ownerId.isEmpty) {
+      throw Exception('Please sign in again to continue.');
+    }
     if (_useMock) {
       final id = 'stay-${DateTime.now().millisecondsSinceEpoch}';
       final guest = _mockPersons.firstWhere((p) => p.id == stay.personId);
@@ -3101,6 +3157,39 @@ class SupabaseService {
         await _saveOfflineDataToDisk();
         return serverStay;
       } catch (e) {
+        if (_isPermanentSyncError(e)) {
+          // The server refused it (e.g. room/property not yours): roll the optimistic
+          // local change back instead of queueing something that can never sync.
+          _cachedStays.removeWhere((s) => s.id == stayId);
+          final rooms = _cachedRooms[stay.propertyId];
+          if (rooms != null) {
+            final rIdx = rooms.indexWhere((r) => r.id == stay.roomId);
+            if (rIdx != -1) {
+              final r = rooms[rIdx];
+              final occ = (r.currentOccupancy - 1).clamp(0, r.capacity);
+              rooms[rIdx] = Room(
+                id: r.id,
+                propertyId: r.propertyId,
+                roomNumber: r.roomNumber,
+                capacity: r.capacity,
+                currentOccupancy: occ,
+                rentalType: r.rentalType,
+                dailyRate: r.dailyRate,
+                monthlyRate: r.monthlyRate,
+                hourlyRate: r.hourlyRate,
+                minimumDays: r.minimumDays,
+                minimumCharge: r.minimumCharge,
+                status: r.status == RoomStatus.maintenance
+                    ? r.status
+                    : (occ >= r.capacity ? RoomStatus.full : RoomStatus.available),
+                photos: r.photos,
+                createdAt: r.createdAt,
+              );
+            }
+          }
+          await _saveOfflineDataToDisk();
+          rethrow;
+        }
         debugPrint('Offline: queued addStay ($e)');
         _queuePendingSync(table: 'stays', action: 'insert', data: payload);
         return newStay;
@@ -3113,6 +3202,7 @@ class SupabaseService {
       final idx = _mockStays.indexWhere((s) => s.id == stayId);
       if (idx != -1) {
         final stay = _mockStays[idx];
+        if (stay.status == 'checked_out') return; // already settled: don't double-decrement
 
         // Decrement room occupancy
         final roomIdx = _mockRooms.indexWhere((r) => r.id == stay.roomId);
@@ -3130,7 +3220,12 @@ class SupabaseService {
             hourlyRate: r.hourlyRate,
             minimumDays: r.minimumDays,
             minimumCharge: r.minimumCharge,
-            status: RoomStatus.available,
+            // Don't turn a room that is under maintenance back into "available".
+            status: r.status == RoomStatus.maintenance
+                ? r.status
+                : (((r.currentOccupancy - 1).clamp(0, r.capacity)) >= r.capacity
+                    ? RoomStatus.full
+                    : RoomStatus.available),
             photos: r.photos,
             createdAt: r.createdAt,
           );
@@ -3159,6 +3254,7 @@ class SupabaseService {
       final idx = _cachedStays.indexWhere((s) => s.id == stayId);
       if (idx != -1) {
         final stay = _cachedStays[idx];
+        if (stay.status == 'checked_out') return; // already settled: don't double-decrement
 
         // Decrement room occupancy locally
         final propRooms = _cachedRooms[stay.propertyId];
@@ -3178,7 +3274,12 @@ class SupabaseService {
               hourlyRate: r.hourlyRate,
               minimumDays: r.minimumDays,
               minimumCharge: r.minimumCharge,
-              status: RoomStatus.available,
+              // Don't turn a room that is under maintenance back into "available".
+              status: r.status == RoomStatus.maintenance
+                  ? r.status
+                  : (((r.currentOccupancy - 1).clamp(0, r.capacity)) >= r.capacity
+                      ? RoomStatus.full
+                      : RoomStatus.available),
               photos: r.photos,
               createdAt: r.createdAt,
             );
@@ -3544,7 +3645,8 @@ class SupabaseService {
             .select()
             .eq('stay_id', stayId)
             .order('paid_at', ascending: false);
-        final list = (res as List).map((json) => Payment.fromJson(json)).toList();
+        final list = _mergePendingPayments(
+            stayId, (res as List).map((json) => Payment.fromJson(json)).toList());
         _cachedPayments[stayId] = list;
         await _saveOfflineDataToDisk();
         return list;
@@ -3568,7 +3670,8 @@ class SupabaseService {
             .select()
             .eq('stay_id', stayId)
             .order('paid_at', ascending: false);
-        final list = (res as List).map((json) => Payment.fromJson(json)).toList();
+        final list = _mergePendingPayments(
+            stayId, (res as List).map((json) => Payment.fromJson(json)).toList());
         _cachedPayments[stayId] = list;
         await _saveOfflineDataToDisk();
       } catch (e) {
@@ -3578,7 +3681,13 @@ class SupabaseService {
   }
 
   Future<Payment> addPayment(Payment payment) async {
-    final ownerId = currentOwnerId ?? _currentOwnerId ?? '11111111-1111-1111-1111-111111111111';
+    final ownerId = currentOwnerId ?? _currentOwnerId ?? '';
+    if (!_useMock && ownerId.isEmpty) {
+      throw Exception('Please sign in again to continue.');
+    }
+    if (payment.amount <= 0) {
+      throw Exception('Payment amount must be greater than zero.');
+    }
     if (_useMock) {
       final id = 'pay-${DateTime.now().millisecondsSinceEpoch}';
       final newPayment = Payment(
@@ -3640,6 +3749,11 @@ class SupabaseService {
         await _saveOfflineDataToDisk();
         return serverPayment;
       } catch (e) {
+        if (_isPermanentSyncError(e)) {
+          _cachedPayments[payment.stayId]?.removeWhere((p) => p.id == payId);
+          await _saveOfflineDataToDisk();
+          rethrow;
+        }
         debugPrint('Offline: queued addPayment ($e)');
         _queuePendingSync(table: 'payments', action: 'insert', data: payload);
         return newPayment;
@@ -3655,33 +3769,10 @@ class SupabaseService {
       if (matches.isNotEmpty) return matches.first;
       return _calculateLocalBillingSummary(stayId);
     } else {
-      // 1. Calculate local billing summary instantly (0 network wait, 0 DB read)
-      final localBilling = _calculateLocalBillingSummary(stayId);
-
-      // 2. Try fetching updated summary from Supabase in real mode
-      try {
-        await Supabase.instance.client.rpc('calculate_stay_billing', params: {
-          'target_stay_id': stayId,
-        });
-
-        final res = await Supabase.instance.client
-            .from('billing_summary')
-            .select()
-            .eq('stay_id', stayId)
-            .maybeSingle();
-        if (res != null) {
-          final serverSummary = BillingSummary.fromJson(res);
-          // If server calculated negative due or has time skew, fallback to sanitized local calculation
-          if (serverSummary.totalAmountDue < 0) {
-            return localBilling;
-          }
-          return serverSummary;
-        }
-        return localBilling;
-      } catch (e) {
-        // Return local calculated billing summary when offline or if RPC fails
-        return localBilling;
-      }
+      // Single source of truth: the on-device calculation (billing rules live in
+      // calculateMonthlyRentDue & friends). The database has no billing function /
+      // table, and a second server-side formula would silently disagree with this one.
+      return _calculateLocalBillingSummary(stayId);
     }
   }
 
@@ -3791,22 +3882,9 @@ class SupabaseService {
             .getPublicUrl(filePath);
         return publicUrl;
       } on StorageException catch (se) {
+        // (Buckets are provisioned by migrations; the client must never create
+        // buckets - least of all public ones.)
         debugPrint('Supabase StorageException on $bucketName: ${se.message} (${se.statusCode})');
-        // Auto-create bucket if not found
-        if (se.statusCode == '404' || se.message.toLowerCase().contains('not found')) {
-          try {
-            await Supabase.instance.client.storage.createBucket(
-              bucketName,
-              const BucketOptions(public: true),
-            );
-            await Supabase.instance.client.storage
-                .from(bucketName)
-                .upload(filePath, localFile, fileOptions: const FileOptions(upsert: true));
-            return Supabase.instance.client.storage.from(bucketName).getPublicUrl(filePath);
-          } catch (createErr) {
-            debugPrint('Could not auto-create bucket $bucketName: $createErr. Using permanent local path.');
-          }
-        }
         // Fallback gracefully to permanent local file so check-in never fails
         return localFile.path;
       } catch (e) {

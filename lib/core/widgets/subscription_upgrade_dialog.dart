@@ -375,30 +375,23 @@ class _SubscriptionUpgradeDialogState extends ConsumerState<SubscriptionUpgradeD
                               return;
                             }
 
-                            setState(() => _isUpdating = true);
+                            // Plans are granted by the server after payment is confirmed;
+                            // the app can no longer switch plans by itself (it used to
+                            // write the plan straight to the database with no payment).
                             final messenger = ScaffoldMessenger.of(context);
                             final nav = Navigator.of(context);
-
-                            try {
-                              await ref.read(authProvider.notifier).upgradeSubscriptionPlan(targetPlan.id);
-                              nav.pop();
-                              messenger.showSnackBar(
-                                SnackBar(
-                                  content: Text('🎉 Successfully activated ${targetPlan.name}! Unlimited capacity unlocked.'),
-                                  backgroundColor: AppColors.verifiedGreen,
-                                  duration: const Duration(seconds: 4),
+                            nav.pop();
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  targetPlan.price == 0
+                                      ? 'To change your plan, please contact support.'
+                                      : 'To activate ${targetPlan.name}, please contact support. '
+                                          'Your plan is enabled on your account once payment is confirmed.',
                                 ),
-                              );
-                            } catch (e) {
-                              messenger.showSnackBar(
-                                SnackBar(
-                                  content: Text('Failed to update subscription: $e'),
-                                  backgroundColor: AppColors.alertRed,
-                                ),
-                              );
-                            } finally {
-                              if (mounted) setState(() => _isUpdating = false);
-                            }
+                                duration: const Duration(seconds: 5),
+                              ),
+                            );
                           },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primaryPill,
@@ -417,15 +410,15 @@ class _SubscriptionUpgradeDialogState extends ConsumerState<SubscriptionUpgradeD
                             _selectedPlanId == currentPlanConfig.id
                                 ? 'Keep Current Plan'
                                 : _selectedPlanId == 'free'
-                                    ? 'Downgrade to Free Tier'
-                                    : 'Subscribe to ${SubscriptionPlanConfig.getPlan(_selectedPlanId).name} (₹${SubscriptionPlanConfig.getPlan(_selectedPlanId).price})',
+                                    ? 'Contact support to change plan'
+                                    : 'Request ${SubscriptionPlanConfig.getPlan(_selectedPlanId).name} (₹${SubscriptionPlanConfig.getPlan(_selectedPlanId).price})',
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                           ),
                   ),
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Unlimited rooms & guests unlocked instantly. Automatic offline cloud backup included.',
+                  'Unlimited rooms & guests. Plans are activated on your account after payment is confirmed.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 11, color: AppColors.textMuted),
                 ),

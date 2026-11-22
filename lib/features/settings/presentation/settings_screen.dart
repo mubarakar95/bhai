@@ -1327,7 +1327,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                       ),
                       onPressed: () async {
-                        await ref.read(authProvider.notifier).logout();
+                        final messenger = ScaffoldMessenger.of(context);
+                        try {
+                          await ref.read(authProvider.notifier).logout();
+                        } catch (e) {
+                          messenger.showSnackBar(
+                            SnackBar(
+                              content: Text(e.toString().replaceFirst('Exception: ', '')),
+                              backgroundColor: AppColors.alertRed,
+                            ),
+                          );
+                        }
                       },
                       icon: const Icon(Icons.logout_rounded),
                       label: const Text('DISCONNECT LEDGER (LOGOUT)', style: TextStyle(fontWeight: FontWeight.bold)),

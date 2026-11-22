@@ -63,3 +63,6 @@ tools/migration/data/
 tools/migration/*.csv
 YouPI-PG/
 .gemini/
+
+# Gradle build output
+android/build/

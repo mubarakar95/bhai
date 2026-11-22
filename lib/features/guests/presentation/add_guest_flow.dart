@@ -683,14 +683,17 @@ class _AddGuestFlowState extends ConsumerState<AddGuestFlow> {
 
     try {
       final db = ref.read(dbServiceProvider);
-      final ownerId = currentOwner?.id ?? db.currentOwnerId ?? '11111111-1111-1111-1111-111111111111';
+      final ownerId = currentOwner?.id ?? db.currentOwnerId;
+      if (ownerId == null || ownerId.isEmpty) {
+        throw Exception('Please sign in again to continue.');
+      }
 
       // 1. Upload photos if newly picked (resilient fallback to local path if storage fails)
       if (_personPhotoFile != null) {
         try {
           _uploadedPersonPhotoUrl = await db.uploadImage('person-photos', _personPhotoFile!);
         } catch (e) {
-          print('Person photo upload fallback: $e');
+          debugPrint('Person photo upload fallback: $e');
           _uploadedPersonPhotoUrl = _personPhotoFile!.path;
         }
       }
@@ -698,7 +701,7 @@ class _AddGuestFlowState extends ConsumerState<AddGuestFlow> {
         try {
           _uploadedAadhaarPhotoUrl = await db.uploadImage('aadhaar-photos', _aadhaarPhotoFile!);
         } catch (e) {
-          print('Aadhaar photo upload fallback: $e');
+          debugPrint('Aadhaar photo upload fallback: $e');
           _uploadedAadhaarPhotoUrl = _aadhaarPhotoFile!.path;
         }
       }

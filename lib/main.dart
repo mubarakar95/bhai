@@ -30,16 +30,46 @@ void main() async {
   );
 
   // Initialize SupabaseService.
-  await SupabaseService.instance.initialize(
-    url: 'https://dsminsgahrnwzskmwsvn.supabase.co',
-    anonKey: 'sb_publishable_Jf1BIZCrl_l2zP0xcD0OGQ_wxYu06Z2',
-  );
+  // The publishable key is public by design (it ships in every build); data access
+  // is enforced by Row Level Security on the server, never by hiding this key.
+  try {
+    await SupabaseService.instance.initialize(
+      url: 'https://dsminsgahrnwzskmwsvn.supabase.co',
+      anonKey: 'sb_publishable_Jf1BIZCrl_l2zP0xcD0OGQ_wxYu06Z2',
+    );
+  } catch (e) {
+    FlutterNativeSplash.remove();
+    runApp(const _StartupErrorApp());
+    return;
+  }
 
   runApp(
     const ProviderScope(
       child: RoomRentalApp(),
     ),
   );
+}
+
+class _StartupErrorApp extends StatelessWidget {
+  const _StartupErrorApp();
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'Bhai App could not start.\nPlease check your connection and reopen the app.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class RoomRentalApp extends ConsumerWidget {

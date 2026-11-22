@@ -1,8 +1,78 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
+import '../services/supabase_service.dart';
+
+/// Resolves a private-bucket URL to a signed URL, then renders it.
+class _SignedNetworkImage extends StatefulWidget {
+  final String url;
+  final double? width;
+  final double? height;
+  final BoxFit fit;
+  final int? cacheWidth;
+  final int? cacheHeight;
+  final Widget placeholder;
+  final Widget errorWidget;
+
+  const _SignedNetworkImage({
+    required this.url,
+    required this.width,
+    required this.height,
+    required this.fit,
+    required this.cacheWidth,
+    required this.cacheHeight,
+    required this.placeholder,
+    required this.errorWidget,
+  });
+
+  @override
+  State<_SignedNetworkImage> createState() => _SignedNetworkImageState();
+}
+
+class _SignedNetworkImageState extends State<_SignedNetworkImage> {
+  late Future<String?> _signed;
+
+  @override
+  void initState() {
+    super.initState();
+    _signed = SupabaseService.instance.resolveStorageUrl(widget.url);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SignedNetworkImage old) {
+    super.didUpdateWidget(old);
+    if (old.url != widget.url) {
+      _signed = SupabaseService.instance.resolveStorageUrl(widget.url);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String?>(
+      future: _signed,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) return widget.placeholder;
+        final signed = snap.data;
+        if (signed == null) return widget.errorWidget;
+        return Image.network(
+          signed,
+          width: widget.width,
+          height: widget.height,
+          fit: widget.fit,
+          cacheWidth: widget.cacheWidth,
+          cacheHeight: widget.cacheHeight,
+          errorBuilder: (context, error, stackTrace) => widget.errorWidget,
+        );
+      },
+    );
+  }
+}
 
 class AppImageHelper {
+  /// True for URLs that point into a private storage bucket (needs signing).
+  static bool isPrivateStorageUrl(String url) =>
+      url.contains('/storage/v1/object/public/aadhaar-photos/');
+
   /// Returns an ImageProvider suitable for network URLs or local file paths,
   /// with optional memory-cache resizing to avoid large RAM consumption.
   static ImageProvider? getImageProvider(
@@ -55,6 +125,18 @@ class AppImageHelper {
 
     if (trimmed.isEmpty) {
       content = placeholder ?? _defaultPlaceholder(width, height);
+    } else if (isPrivateStorageUrl(trimmed)) {
+      // Aadhaar photos live in a private bucket: fetch a short-lived signed URL.
+      content = _SignedNetworkImage(
+        url: trimmed,
+        width: width,
+        height: height,
+        fit: fit,
+        cacheWidth: calcCacheW,
+        cacheHeight: calcCacheH,
+        placeholder: placeholder ?? _defaultPlaceholder(width, height, isLoading: true),
+        errorWidget: errorWidget ?? _defaultPlaceholder(width, height),
+      );
     } else if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
       content = Image.network(
         trimmed,
