@@ -8,7 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
-import '../models/subscription_plan.dart';
 import '../utils/image_optimizer.dart';
 
 class SupabaseService {
@@ -496,29 +495,43 @@ class SupabaseService {
     }
   }
 
+  /// Number of billable days of a stay, counted by CALENDAR DATE (time of day is
+  /// ignored, so the figure is stable for the whole day and does not tick over at the
+  /// hour the guest checked in). Checking in and out on the same date is 1 day;
+  /// 1 Jan -> 31 Jan is 30 days, 1 Jan -> 1 Feb is 31 days.
+  static int stayDaysBetween(DateTime start, DateTime end) {
+    final a = DateTime.utc(start.year, start.month, start.day);
+    final b = DateTime.utc(end.year, end.month, end.day);
+    return max(1, b.difference(a).inDays);
+  }
+
+  /// Monthly rent for a stay of [stayDays] days (day 1 = check-in day).
+  ///
+  /// [minDays] / [minCharge] come from the room (defaults: 15 days and half the
+  /// monthly rent - used here too whenever a room's value is blank / 0):
+  ///   day 1..minDays     -> minCharge                (short stay)
+  ///   day minDays+1..31  -> 1 month                  (the 31st day is still 1 month)
+  ///   then, per extra 30-day cycle:
+  ///     extra 0..1 days  -> no extra charge
+  ///     extra 2..minDays -> + minCharge              (e.g. day 32..45 = 1.5 months)
+  ///     more than that   -> + a full month           (e.g. day 46 = 2 months)
   double calculateMonthlyRentDue({
     required double agreedRate,
     required int stayDays,
     required int minDays,
     required double minCharge,
   }) {
-    if (minDays > 0 && minCharge > 0) {
-      if (stayDays <= minDays) {
-        return minCharge;
-      }
-      final fullMonths = stayDays ~/ 30;
-      final remainderDays = stayDays % 30;
-      if (remainderDays == 0) {
-        return agreedRate * max(1, fullMonths);
-      } else if (remainderDays <= minDays) {
-        return (agreedRate * fullMonths) + minCharge;
-      } else {
-        return agreedRate * (fullMonths + 1);
-      }
-    } else {
-      final months = max(1, (stayDays / 30.0).ceil());
-      return agreedRate * months;
-    }
+    final shortDays = minDays > 0 ? minDays : 15;
+    final shortCharge = minCharge > 0 ? minCharge : agreedRate / 2;
+
+    if (stayDays <= shortDays) return shortCharge;
+    if (stayDays <= 30) return agreedRate;
+
+    final fullMonths = stayDays ~/ 30;
+    final extraDays = stayDays % 30;
+    if (extraDays <= 1) return agreedRate * fullMonths;
+    if (extraDays <= shortDays) return agreedRate * fullMonths + shortCharge;
+    return agreedRate * (fullMonths + 1);
   }
 
   void _recalculateMockBilling(String stayId) {
@@ -539,7 +552,7 @@ class SupabaseService {
         due = stay.agreedRate * hours;
         break;
       case RentalBillingType.daily:
-        final days = max(1, (totalHours / 24.0).ceil());
+        final days = stayDaysBetween(checkIn, checkOut);
         due = stay.agreedRate * days;
         break;
       case RentalBillingType.monthly:
@@ -549,7 +562,7 @@ class SupabaseService {
                 : null);
         final minDays = room?.minimumDays ?? 0;
         final minCharge = room?.minimumCharge ?? 0.0;
-        final stayDays = max(1, (duration.inSeconds / 86400.0).ceil());
+        final stayDays = stayDaysBetween(checkIn, checkOut);
         due = calculateMonthlyRentDue(
           agreedRate: stay.agreedRate,
           stayDays: stayDays,
@@ -2866,6 +2879,58 @@ class SupabaseService {
     return [...local, ...server];
   }
 
+  // --- Daily accounts calculation ---
+
+  static String _dayKey(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  /// Runs the daily accounts calculation on the FIRST app open of each calendar day
+  /// (later opens the same day do nothing, so the owner sees one consistent set of
+  /// figures all day). It uploads anything still waiting to sync, then reloads stays
+  /// and the full payment ledger from the server, so every balance - which is derived
+  /// from check-in date, room tariff rules and payments - is recalculated for today.
+  ///
+  /// Returns true when the calculation actually ran.
+  Future<bool> runDailyCalculationIfNeeded() async {
+    if (_useMock) return false;
+    final ownerId = currentOwnerId;
+    if (ownerId == null || ownerId.isEmpty) return false;
+
+    final today = _dayKey(DateTime.now());
+    final key = 'daily_calc_date_$ownerId';
+    SharedPreferences? prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+      if (prefs.getString(key) == today) return false;
+    } catch (_) {
+      // can't read the marker: fall through and run once for this session
+    }
+
+    try {
+      await _processPendingSyncQueue();
+      await _backgroundSyncStays(ownerId, force: true);
+      await prefs?.setString(key, today);
+      return true;
+    } catch (e) {
+      // Offline etc.: don't mark the day as done, try again on the next open.
+      debugPrint('Daily accounts calculation postponed: $e');
+      return false;
+    }
+  }
+
+  /// Date of the last completed daily calculation for the signed-in owner (or null).
+  Future<DateTime?> lastDailyCalculationDate() async {
+    try {
+      final ownerId = currentOwnerId;
+      if (ownerId == null) return null;
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getString('daily_calc_date_$ownerId');
+      return v == null ? null : DateTime.tryParse(v);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<List<Stay>> getStays({bool activeOnly = false}) async {
     if (_useMock) {
       var filtered = _mockStays.where((s) => s.ownerId == _currentOwnerId);
@@ -2973,13 +3038,14 @@ class SupabaseService {
     }
   }
 
-  void _backgroundSyncStays(String ownerId) {
-    if (_lastStaysSync != null &&
+  Future<void> _backgroundSyncStays(String ownerId, {bool force = false}) {
+    if (!force &&
+        _lastStaysSync != null &&
         DateTime.now().difference(_lastStaysSync!).inMinutes < 3) {
-      return; // Throttled to minimize Supabase reads
+      return Future.value(); // Throttled to minimize Supabase reads
     }
     _lastStaysSync = DateTime.now();
-    Future.microtask(() async {
+    return Future(() async {
       try {
         final res = await Supabase.instance.client
             .from('stays')
@@ -3815,14 +3881,14 @@ class SupabaseService {
         due = stay.agreedRate * hours;
         break;
       case RentalBillingType.daily:
-        final days = max(1, (totalHours / 24.0).ceil());
+        final days = stayDaysBetween(checkIn, checkOut);
         due = stay.agreedRate * days;
         break;
       case RentalBillingType.monthly:
         final room = stay.room ?? getCachedRoomById(stay.roomId, stay.propertyId);
         final minDays = room?.minimumDays ?? 0;
         final minCharge = room?.minimumCharge ?? 0.0;
-        final stayDays = max(1, (duration.inSeconds / 86400.0).ceil());
+        final stayDays = stayDaysBetween(checkIn, checkOut);
         due = calculateMonthlyRentDue(
           agreedRate: stay.agreedRate,
           stayDays: stayDays,

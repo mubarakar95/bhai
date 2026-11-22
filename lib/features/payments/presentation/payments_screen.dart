@@ -18,8 +18,8 @@ class PaymentsScreen extends ConsumerWidget {
       title: '${stay.person?.name ?? "Guest"} Ledger',
       showBackButton: true,
       actions: [
-        if (stay.status == 'active')
-          IconButton(
+        // Also allowed after checkout, so late-collected dues / deferred refunds can be recorded.
+        IconButton(
             icon: const Icon(Icons.add_card_rounded, color: AppColors.primaryPill),
             tooltip: 'Record Payment',
             onPressed: () {
@@ -116,8 +116,7 @@ class PaymentsScreen extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  if (stay.status == 'active')
-                    ElevatedButton.icon(
+                  ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primaryPill,
                         shape: const StadiumBorder(),

@@ -1,4 +1,5 @@
 import 'dart:math';
+import '../../../core/services/supabase_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -2120,11 +2121,9 @@ class _GuestDetailScreenState extends ConsumerState<GuestDetailScreen> {
                                       room != null &&
                                       room.minimumDays > 0 &&
                                       room.minimumCharge > 0) {
-                                    final now = DateTime.now();
-                                    final checkIn = widget.stay.checkInDate.toLocal();
-                                    final checkOut = (widget.stay.checkOutDate ?? now).toLocal();
-                                    final duration = checkOut.isBefore(checkIn) ? Duration.zero : checkOut.difference(checkIn);
-                                    final stayDays = max(1, (duration.inSeconds / 86400.0).ceil());
+                                    final stayDays = SupabaseService.stayDaysBetween(
+                                        widget.stay.checkInDate.toLocal(),
+                                        (widget.stay.checkOutDate ?? DateTime.now()).toLocal());
                                     if (stayDays <= room.minimumDays) {
                                       return Padding(
                                         padding: const EdgeInsets.only(top: 10),
@@ -2492,98 +2491,167 @@ class _GuestDetailScreenState extends ConsumerState<GuestDetailScreen> {
         room.minimumCharge > 0;
     final now = DateTime.now();
     final checkIn = widget.stay.checkInDate.toLocal();
-    final stayDays = max(1, (now.difference(checkIn).inSeconds / 86400.0).ceil());
+    final stayDays = SupabaseService.stayDaysBetween(checkIn, now);
     final isWithinMinDays = isMinChargeActive && stayDays <= room.minimumDays;
 
-    final confirmed = await showDialog<bool>(
+    String settleMode = 'cash';
+    // 'settle' = money changed hands now (recorded), 'later' = check out leaving the balance open
+    final choice = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: const Text('VERIFY SETTLEMENT BALANCE'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Verify final checkout calculations:'),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: pendingAmount > 0 
-                    ? AppColors.alertRed.withOpacity(0.1) 
-                    : AppColors.verifiedGreen.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    pendingAmount > 0 ? 'DUE FROM GUEST:' : 'REFUND TO GUEST:',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocal) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: const Text('VERIFY SETTLEMENT BALANCE'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Final checkout calculation (rent for the stay minus everything already paid, advance and deposit included):'),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: pendingAmount > 0
+                        ? AppColors.alertRed.withOpacity(0.1)
+                        : AppColors.verifiedGreen.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(16),
                   ),
-                  Text(
-                    '₹${pendingAmount.abs().toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: pendingAmount > 0 ? AppColors.alertRed : AppColors.verifiedGreen,
-                      fontSize: 18,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        pendingAmount > 0
+                            ? 'DUE FROM GUEST:'
+                            : (pendingAmount < 0 ? 'REFUND TO GUEST:' : 'ALL SETTLED:'),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        '₹${pendingAmount.abs().toStringAsFixed(2)}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: pendingAmount > 0 ? AppColors.alertRed : AppColors.verifiedGreen,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (isWithinMinDays) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryPill.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.primaryPill.withOpacity(0.2)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.info_outline_rounded, size: 16, color: AppColors.primaryPill),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Minimum Stay Tariff Applied: ₹${room.minimumCharge.toStringAsFixed(0)} (Stay: $stayDays days ≤ ${room.minimumDays} days threshold)',
+                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primaryPill),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
+                const SizedBox(height: 16),
+                if (pendingAmount != 0) ...[
+                  Text(
+                    pendingAmount > 0
+                        ? 'Tap COLLECTED once the guest has paid this amount - it is recorded in the ledger.'
+                        : 'Tap REFUNDED once you have handed this amount back - it is recorded in the ledger.',
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    value: settleMode,
+                    decoration: const InputDecoration(labelText: 'Payment mode'),
+                    items: const [
+                      DropdownMenuItem(value: 'cash', child: Text('CASH')),
+                      DropdownMenuItem(value: 'upi', child: Text('UPI')),
+                      DropdownMenuItem(value: 'bank_transfer', child: Text('BANK TRANSFER')),
+                      DropdownMenuItem(value: 'card', child: Text('CARD')),
+                    ],
+                    onChanged: (v) => setLocal(() => settleMode = v ?? 'cash'),
+                  ),
+                ] else
+                  const Text('Nothing is owed either way.'),
+              ],
+            ),
+          ),
+          actionsOverflowButtonSpacing: 8,
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: const Text('CANCEL'),
+            ),
+            if (pendingAmount != 0)
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, 'later'),
+                child: Text(pendingAmount > 0 ? 'CHECK OUT, UNPAID' : 'CHECK OUT, REFUND LATER'),
+              ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: pendingAmount > 0 ? AppColors.alertRed : AppColors.verifiedGreen,
+                shape: const StadiumBorder(),
+              ),
+              onPressed: () => Navigator.pop(dialogCtx, 'settle'),
+              child: Text(
+                pendingAmount > 0
+                    ? 'COLLECTED & CHECK OUT'
+                    : (pendingAmount < 0 ? 'REFUNDED & CHECK OUT' : 'CONFIRM CHECK-OUT'),
               ),
             ),
-            if (isWithinMinDays) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppColors.primaryPill.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.primaryPill.withOpacity(0.2)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.info_outline_rounded, size: 16, color: AppColors.primaryPill),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Minimum Stay Tariff Applied: ₹${room.minimumCharge.toStringAsFixed(0)} (Stay: $stayDays days ≤ ${room.minimumDays} days threshold)',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primaryPill),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-            const SizedBox(height: 16),
-            const Text('Have you collected all dues/refunded deposit?'),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('CANCEL'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: pendingAmount > 0 ? AppColors.alertRed : AppColors.verifiedGreen,
-              shape: const StadiumBorder(),
-            ),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('CONFIRM CHECK-OUT'),
-          ),
-        ],
       ),
     );
 
-    if (confirmed == true) {
-      await ref.read(staysProvider.notifier).checkOut(widget.stay.id, DateTime.now());
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Checkout settlement documented successfully.')),
-        );
-        Navigator.pop(context);
+    if (choice == null) return;
+
+    final stayId = widget.stay.id;
+    await ref.read(staysProvider.notifier).checkOut(stayId, DateTime.now());
+
+    // Record the money that changed hands so the ledger balances and keeps an audit trail.
+    var recorded = false;
+    if (choice == 'settle') {
+      final due = double.parse(dbService.getLocalBillingSummary(stayId).pendingAmount.toStringAsFixed(2));
+      if (due != 0) {
+        await ref.read(paymentsProvider(stayId).notifier).addPayment(Payment(
+              id: '',
+              stayId: stayId,
+              personId: widget.stay.personId,
+              ownerId: widget.stay.ownerId,
+              paymentType: due > 0 ? PaymentCategory.rent : PaymentCategory.refund,
+              amount: due.abs(),
+              paymentMode: settleMode,
+              paidAt: DateTime.now(),
+              notes: due > 0 ? 'Checkout settlement - dues collected' : 'Checkout settlement - refund to guest',
+              recordedBy: widget.stay.ownerId,
+              createdAt: DateTime.now(),
+            ));
+        recorded = true;
       }
+    }
+    ref.invalidate(billingSummaryProvider(stayId));
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(recorded
+              ? 'Checked out. Settlement recorded in the ledger.'
+              : (choice == 'later' && pendingAmount != 0
+                  ? 'Checked out. Balance of ₹${pendingAmount.abs().toStringAsFixed(2)} left open - record it later from Payments.'
+                  : 'Checked out. Nothing was owed.')),
+        ),
+      );
+      Navigator.pop(context);
     }
   }
 

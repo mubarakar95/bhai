@@ -66,7 +66,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
       final pdfBytes = await PdfService.instance.generatePoliceReport(
         propertyName: selectedProp.name,
         propertyAddress: '${selectedProp.address}, ${selectedProp.city}, ${selectedProp.state} - ${selectedProp.pincode}',
-        businessName: owner?.businessName,
+        businessName: (owner?.fullName.trim().isNotEmpty ?? false) ? owner!.fullName.trim() : owner?.businessName,
         businessAddress: owner?.businessAddress,
         stays: filteredStays,
         dateRange: _checkInDateRange ?? _checkOutDateRange,

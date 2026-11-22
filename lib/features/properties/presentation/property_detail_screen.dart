@@ -55,18 +55,26 @@ class _PropertyDetailScreenState extends ConsumerState<PropertyDetailScreen> {
       } else {
         _roomSingleRateController.text = roomToEdit.monthlyRate.toStringAsFixed(0);
       }
-      _roomMinDaysController.text = roomToEdit.minimumDays > 0 ? roomToEdit.minimumDays.toString() : '';
-      _roomMinChargeController.text = roomToEdit.minimumCharge > 0 ? roomToEdit.minimumCharge.toStringAsFixed(0) : '';
+      // Defaults: 15 days, charge = half the monthly rent
+      _roomMinDaysController.text =
+          (roomToEdit.minimumDays > 0 ? roomToEdit.minimumDays : 15).toString();
+      _roomMinChargeController.text =
+          (roomToEdit.minimumCharge > 0 ? roomToEdit.minimumCharge : roomToEdit.monthlyRate / 2)
+              .toStringAsFixed(0);
     } else {
       _roomNoController.clear();
       _roomCapacityController.text = '4';
       _selectedRateMode = 'monthly';
       _roomSingleRateController.text = '0';
-      _roomMinDaysController.text = '';
-      _roomMinChargeController.text = '';
+      _roomMinDaysController.text = '15';
+      _roomMinChargeController.text = '0';
     }
 
     bool isSavingRoom = false;
+    // While the owner has not typed their own minimum charge it follows half the rent.
+    bool minChargeEdited = roomToEdit != null &&
+        roomToEdit.minimumCharge > 0 &&
+        roomToEdit.minimumCharge != roomToEdit.monthlyRate / 2;
 
     showDialog(
       context: context,
@@ -147,6 +155,12 @@ class _PropertyDetailScreenState extends ConsumerState<PropertyDetailScreen> {
                       prefixIcon: const Icon(Icons.payments_outlined),
                     ),
                     keyboardType: TextInputType.number,
+                    onChanged: (v) {
+                      if (_selectedRateMode == 'monthly' && !minChargeEdited) {
+                        final r = double.tryParse(v.trim());
+                        if (r != null) _roomMinChargeController.text = (r / 2).toStringAsFixed(0);
+                      }
+                    },
                     validator: (v) {
                       if (v == null || v.trim().isEmpty) return 'Required';
                       if (double.tryParse(v.trim()) == null || double.parse(v.trim()) < 0) {
@@ -164,7 +178,7 @@ class _PropertyDetailScreenState extends ConsumerState<PropertyDetailScreen> {
                             controller: _roomMinDaysController,
                             decoration: const InputDecoration(
                               labelText: 'Min Stay Days',
-                              hintText: 'e.g. 15',
+                              helperText: 'Default 15',
                               prefixIcon: Icon(Icons.calendar_today_rounded),
                             ),
                             keyboardType: TextInputType.number,
@@ -185,10 +199,11 @@ class _PropertyDetailScreenState extends ConsumerState<PropertyDetailScreen> {
                             controller: _roomMinChargeController,
                             decoration: const InputDecoration(
                               labelText: 'Min Charge (₹)',
-                              hintText: 'e.g. 500',
+                              helperText: 'Default: half rent',
                               prefixIcon: Icon(Icons.shield_outlined),
                             ),
                             keyboardType: TextInputType.number,
+                            onChanged: (_) => minChargeEdited = true,
                             validator: (v) {
                               if (v != null && v.trim().isNotEmpty) {
                                 final c = double.tryParse(v.trim());
@@ -224,8 +239,10 @@ class _PropertyDetailScreenState extends ConsumerState<PropertyDetailScreen> {
                       if (!_roomFormKey.currentState!.validate()) return;
                       setDialogState(() => isSavingRoom = true);
                       final rateValue = double.tryParse(_roomSingleRateController.text.trim()) ?? 0.0;
-                      final minDaysValue = int.tryParse(_roomMinDaysController.text.trim()) ?? 0;
-                      final minChargeValue = double.tryParse(_roomMinChargeController.text.trim()) ?? 0.0;
+                      final minDaysValue = int.tryParse(_roomMinDaysController.text.trim()) ?? 15;
+                      final minChargeText = double.tryParse(_roomMinChargeController.text.trim());
+                      final minChargeValue =
+                          (minChargeText == null || minChargeText <= 0) ? rateValue / 2 : minChargeText;
                       double hourly = 0.0;
                       double daily = 0.0;
                       double monthly = 0.0;

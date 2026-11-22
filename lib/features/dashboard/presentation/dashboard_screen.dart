@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../../core/constants/colors.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/status_badge.dart';
@@ -581,6 +583,53 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
+  String _money(double v) {
+    final whole = v == v.roundToDouble();
+    return '₹${NumberFormat(whole ? '#,##,##0' : '#,##,##0.00', 'en_IN').format(v)}';
+  }
+
+  /// Builds a short plain-text list for a cash collector: who to collect from,
+  /// where they stay, how to reach them and how much. Nothing else (no ID numbers,
+  /// photos or rent history). Opens the share sheet so it can go straight to WhatsApp.
+  Future<void> _shareCollectionDetails(List<Map<String, dynamic>> items) async {
+    final rows = items.map((item) {
+      final Stay stay = item['stay'];
+      final double amount = item['amount'];
+      final person = stay.person ?? dbService.getCachedPersonById(stay.personId);
+      final room = stay.room ?? dbService.getCachedRoomById(stay.roomId, stay.propertyId);
+      final property = dbService.getCachedPropertyById(stay.propertyId);
+      return (
+        name: person?.name ?? 'Guest',
+        mobile: person?.mobileNo ?? '',
+        place: [
+          if (property != null) property.name,
+          if (room != null) 'Room ${room.roomNumber}',
+        ].join(', '),
+        amount: amount,
+      );
+    }).toList()
+      ..sort((a, b) {
+        final c = a.place.compareTo(b.place);
+        return c != 0 ? c : a.name.compareTo(b.name);
+      });
+
+    final total = rows.fold<double>(0, (sum, r) => sum + r.amount);
+    final b = StringBuffer()
+      ..writeln('*Cash to collect* - ${DateFormat('dd MMM yyyy').format(DateTime.now())}')
+      ..writeln('Total: *${_money(total)}* from ${rows.length} guest${rows.length == 1 ? '' : 's'}')
+      ..writeln();
+    for (var i = 0; i < rows.length; i++) {
+      final r = rows[i];
+      b.writeln('${i + 1}. *${r.name}*');
+      if (r.place.isNotEmpty) b.writeln('   ${r.place}');
+      if (r.mobile.isNotEmpty) b.writeln('   Mobile: ${r.mobile}');
+      b.writeln('   Collect: *${_money(r.amount)}*');
+      if (i != rows.length - 1) b.writeln();
+    }
+
+    await SharePlus.instance.share(ShareParams(text: b.toString().trimRight()));
+  }
+
   void _showBalanceGuestSheet(
     BuildContext context,
     String title,
@@ -612,6 +661,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               padding: const EdgeInsets.all(20),
               child: Row(
                 children: [
+                  if (isReceive && items.isNotEmpty) ...[
+                    // Top-left: share a ready-to-send collection list (e.g. to WhatsApp)
+                    TextButton.icon(
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.verifiedGreen,
+                        backgroundColor: AppColors.verifiedGreen.withOpacity(0.12),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        shape: const StadiumBorder(),
+                      ),
+                      onPressed: () => _shareCollectionDetails(items),
+                      icon: const Icon(Icons.share_rounded, size: 16),
+                      label: const Text('Share', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    ),
+                    const SizedBox(width: 10),
+                  ],
                   Icon(
                     isReceive ? Icons.south_west_rounded : Icons.north_east_rounded,
                     color: isReceive ? AppColors.verifiedGreen : AppColors.alertRed,

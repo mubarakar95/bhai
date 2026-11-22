@@ -240,7 +240,7 @@ class PdfService {
             ),
             pw.SizedBox(height: 10),
 
-            // Header: Title and Property Info
+            // Header: owner (top-left, emphasised) | camp + date (top-right, normal)
             pw.Row(
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -249,78 +249,84 @@ class PdfService {
                   child: pw.Column(
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
-                      pw.Text(
-                        'OFFICIAL GUEST REGISTRATION RECORD',
-                        style: pw.TextStyle(
-                          font: fontTitle,
-                          fontSize: 16,
-                          color: PdfColor.fromHex('#1F2A44'),
-                        ),
-                      ),
-                      pw.SizedBox(height: 2),
-                      pw.Text(
-                        'Verified Resident & Tenant Registration Ledger',
-                        style: pw.TextStyle(
-                          font: fontBody,
-                          fontSize: 9.5,
-                          color: PdfColor.fromHex('#64748B'),
-                        ),
-                      ),
-                      pw.SizedBox(height: 5),
-                      if (businessName != null && businessName.isNotEmpty) ...[
+                      if (businessName != null && businessName.isNotEmpty)
                         pw.Text(
                           businessName,
                           style: pw.TextStyle(
                             font: fontBodyBold,
-                            fontSize: 12,
+                            fontSize: 13,
                             color: PdfColor.fromHex('#1F2A44'),
                           ),
                         ),
-                        if (businessAddress != null && businessAddress.isNotEmpty)
-                          pw.Text(
-                            businessAddress,
-                            style: pw.TextStyle(
-                              font: fontBody,
-                              fontSize: 8.5,
-                              color: PdfColor.fromHex('#64748B'),
-                            ),
+                      if (businessAddress != null && businessAddress.isNotEmpty)
+                        pw.Text(
+                          businessAddress,
+                          style: pw.TextStyle(
+                            font: fontBodyBold,
+                            fontSize: 9,
+                            color: PdfColor.fromHex('#1F2A44'),
                           ),
-                        pw.SizedBox(height: 4),
-                      ],
+                        ),
+                    ],
+                  ),
+                ),
+                pw.SizedBox(width: 16),
+                pw.Expanded(
+                  child: pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.end,
+                    children: [
                       pw.Text(
                         propertyName,
+                        textAlign: pw.TextAlign.right,
                         style: pw.TextStyle(
-                          font: fontBodyBold,
-                          fontSize: 12,
+                          font: fontBody,
+                          fontSize: 11,
                           color: PdfColor.fromHex('#2B2B2E'),
                         ),
                       ),
                       pw.Text(
                         propertyAddress,
+                        textAlign: pw.TextAlign.right,
                         style: pw.TextStyle(
                           font: fontBody,
-                          fontSize: 8.5,
+                          fontSize: 9,
                           color: PdfColor.fromHex('#2B2B2E'),
                         ),
                       ),
+                      pw.SizedBox(height: 4),
+                      pw.Text(
+                        'Date: ${DateFormat('dd-MMM-yyyy').format(DateTime.now())}',
+                        style: pw.TextStyle(font: fontBody, fontSize: 9.5),
+                      ),
+                      if (dateRange != null)
+                        pw.Text(
+                          'Period: ${DateFormat('dd/MM/yy').format(dateRange.start)} - ${DateFormat('dd/MM/yy').format(dateRange.end)}',
+                          style: pw.TextStyle(font: fontBody, fontSize: 9),
+                        ),
                     ],
                   ),
                 ),
-                pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.end,
-                  children: [
-                    pw.Text(
-                      'Date: ${DateFormat('dd-MMM-yyyy').format(DateTime.now())}',
-                      style: pw.TextStyle(font: fontBody, fontSize: 9.5),
-                    ),
-                    if (dateRange != null)
-                      pw.Text(
-                        'Period: ${DateFormat('dd/MM/yy').format(dateRange.start)} - ${DateFormat('dd/MM/yy').format(dateRange.end)}',
-                        style: pw.TextStyle(font: fontBody, fontSize: 9),
-                      ),
-                  ],
-                ),
               ],
+            ),
+            pw.SizedBox(height: 8),
+
+            // Title
+            pw.Text(
+              'OFFICIAL GUEST REGISTRATION RECORD',
+              style: pw.TextStyle(
+                font: fontTitle,
+                fontSize: 16,
+                color: PdfColor.fromHex('#1F2A44'),
+              ),
+            ),
+            pw.SizedBox(height: 2),
+            pw.Text(
+              'Verified Resident & Tenant Registration Ledger',
+              style: pw.TextStyle(
+                font: fontBody,
+                fontSize: 9.5,
+                color: PdfColor.fromHex('#64748B'),
+              ),
             ),
             pw.SizedBox(height: 6),
             pw.Divider(thickness: 1.5, color: PdfColor.fromHex('#1F2A44')),

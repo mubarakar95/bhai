@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants/colors.dart';
 import '../core/providers/app_providers.dart';
 import '../core/services/app_update_service.dart';
+import '../core/services/supabase_service.dart';
 import 'dashboard/presentation/dashboard_screen.dart';
 import 'guests/presentation/guests_screen.dart';
 import 'properties/presentation/properties_screen.dart';
@@ -32,7 +33,23 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       Future.delayed(const Duration(milliseconds: 1500), () {
         if (mounted) _checkForForceUpdate();
       });
+      _runDailyAccounts();
     });
+  }
+
+  /// First open of the day: recalculate everybody's balances from fresh data.
+  Future<void> _runDailyAccounts() async {
+    final ran = await SupabaseService.instance.runDailyCalculationIfNeeded();
+    if (!ran || !mounted) return;
+    await ref.read(staysProvider.notifier).loadStays();
+    ref.invalidate(billingSummaryProvider);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Today's accounts have been calculated."),
+        duration: Duration(seconds: 3),
+      ),
+    );
   }
 
   Future<void> _checkForForceUpdate() async {

@@ -58,8 +58,8 @@ void main() {
         minDays: 0,
         minCharge: 0.0,
       );
-      // Month 1 (<30 days) is 1 full month = 6000
-      expect(rentDue5Days, equals(6000.0));
+      // Short stay (<=15 days) is half a month = 3000
+      expect(rentDue5Days, equals(3000.0));
 
       final rentDue45Days = dbService.calculateMonthlyRentDue(
         agreedRate: 6000.0,
@@ -67,8 +67,8 @@ void main() {
         minDays: 0,
         minCharge: 0.0,
       );
-      // 45 days = 1 month + 15 days = 2 full months = 12000
-      expect(rentDue45Days, equals(12000.0));
+      // 45 days = 1 month + 15 extra days = 1 month + half a month = 9000
+      expect(rentDue45Days, equals(9000.0));
     });
   });
 }
